@@ -37,7 +37,9 @@ radius to a single directory:
 - Docker (Desktop on macOS/Windows, Engine on Linux)
 - On Windows, use WSL2.
 
-## Install
+## Setup
+
+### 1. Clone and build the image
 
 ```bash
 git clone https://github.com/jchaselubitz/agent-pod
@@ -45,16 +47,64 @@ cd agent-pod
 ./install.sh
 ```
 
-This builds the `agent-pod` image with all four CLIs. Pin versions if you like:
+`install.sh` builds the `agent-pod` image with all four CLIs and then prints
+the installed version of each. A successful build ends with:
+
+```
+Image 'agent-pod' built.
+Installed versions:
+  claude:      ...
+  codex:       ...
+  opencode:    ...
+  cursor-agent: ...
+
+Done. Next steps:
+  ...
+```
+
+> Run `install.sh` directly (`./install.sh`) from a normal terminal. If you
+> launch it via an IDE "run file" action that appends `; exit`, the window
+> closes the instant it finishes — which looks like a crash even though the
+> build succeeded. Check with `docker images | grep agent-pod`.
+
+Pin versions if you like:
 
 ```bash
 CLAUDE_CODE_VERSION=2.0.0 OPENCODE_VERSION=0.3.0 ./install.sh
 ```
 
-Put the launcher on your PATH (or alias it):
+### 2. Put the launcher on your PATH
+
+The `agent-pod` launcher lives in the repo, so alias it to its absolute path
+(replace the path with wherever you cloned the repo):
 
 ```bash
-alias agent-pod="$PWD/agent-pod"   # add to ~/.bashrc or ~/.zshrc
+# zsh
+echo "alias agent-pod=\"$PWD/agent-pod\"" >> ~/.zshrc && source ~/.zshrc
+
+# bash
+echo "alias agent-pod=\"$PWD/agent-pod\"" >> ~/.bashrc && source ~/.bashrc
+```
+
+Or symlink it into a directory already on your PATH:
+
+```bash
+ln -s "$PWD/agent-pod" /usr/local/bin/agent-pod
+```
+
+### 3. Verify
+
+```bash
+agent-pod shell          # opens a prompt like:  agent-pod:/...$
+```
+
+Inside the sandbox, confirm all four CLIs are present, then `exit`:
+
+```bash
+claude --version
+codex --version
+opencode --version
+cursor-agent --version
 ```
 
 ## Usage
