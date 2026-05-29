@@ -5,13 +5,14 @@ your **current project directory** — so you can safely let them run in fully
 autonomous ("yolo") mode without exposing your home directory, SSH keys, cloud
 credentials, or other projects.
 
-One image, one launcher, four agents:
+One image, one launcher, five agents:
 
 | Agent | CLI | Default autonomous flags |
 |-------|-----|--------------------------|
 | **Claude Code** | `claude` | `--dangerously-skip-permissions` |
 | **OpenAI Codex** | `codex` | `--dangerously-bypass-approvals-and-sandbox` |
 | **OpenCode** | `opencode` | _(uses its own config)_ |
+| **Overlord** | `ovld` | _(uses its own config)_ |
 | **Cursor Agent** | `cursor-agent` | `--force` |
 
 > Inspired by [`claude-pod`](https://github.com/trekhleb/claude-pod), generalized
@@ -47,7 +48,7 @@ cd agent-pod
 ./install.sh
 ```
 
-`install.sh` builds the `agent-pod` image with all four CLIs and then prints
+`install.sh` builds the `agent-pod` image with all five CLIs and then prints
 the installed version of each. A successful build ends with:
 
 ```
@@ -56,6 +57,7 @@ Installed versions:
   claude:      ...
   codex:       ...
   opencode:    ...
+  ovld:        ...
   cursor-agent: ...
 
 Done. Next steps:
@@ -98,12 +100,13 @@ ln -s "$PWD/agent-pod" /usr/local/bin/agent-pod
 agent-pod shell          # opens a prompt like:  agent-pod:/...$
 ```
 
-Inside the sandbox, confirm all four CLIs are present, then `exit`:
+Inside the sandbox, confirm all five CLIs are present, then `exit`:
 
 ```bash
 claude --version
 codex --version
 opencode --version
+ovld version
 cursor-agent --version
 ```
 
@@ -115,6 +118,7 @@ From inside any project directory:
 agent-pod claude            # Claude Code
 agent-pod codex             # OpenAI Codex
 agent-pod opencode          # OpenCode
+agent-pod overlord          # Overlord
 agent-pod cursor            # Cursor Agent
 agent-pod shell             # a plain shell inside the sandbox
 ```
@@ -159,9 +163,9 @@ to `0.0.0.0` (not `localhost`) to be reachable from the host.
 
 ## How it works
 
-`install.sh` builds a Node-based image that installs the three npm CLIs
-(`@anthropic-ai/claude-code`, `@openai/codex`, `opencode-ai`) and the Cursor
-Agent via its vendor installer (relocated to a global path).
+`install.sh` builds a Node-based image that installs the four npm CLIs
+(`@anthropic-ai/claude-code`, `@openai/codex`, `opencode-ai`, `overlord-cli`)
+and the Cursor Agent via its vendor installer (relocated to a global path).
 
 The `agent-pod` launcher then runs, roughly:
 

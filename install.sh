@@ -5,6 +5,7 @@
 # Version pins (optional), override via env before running:
 #   CLAUDE_CODE_VERSION=2.0.0 ./install.sh
 #   CODEX_VERSION=...          OPENCODE_VERSION=...
+#   OVERLORD_VERSION=...
 set -eo pipefail
 
 IMAGE="${AGENT_POD_IMAGE:-agent-pod}"
@@ -13,6 +14,7 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-latest}"
 CODEX_VERSION="${CODEX_VERSION:-latest}"
 OPENCODE_VERSION="${OPENCODE_VERSION:-latest}"
+OVERLORD_VERSION="${OVERLORD_VERSION:-latest}"
 
 if [ -t 1 ]; then
   C_INFO=$'\033[34m'; C_OK=$'\033[32m'; C_ERR=$'\033[31m'; C_DIM=$'\033[2m'; C_OFF=$'\033[0m'
@@ -31,10 +33,11 @@ BUILD_ARGS=(
   --build-arg "CLAUDE_CODE_VERSION=$CLAUDE_CODE_VERSION"
   --build-arg "CODEX_VERSION=$CODEX_VERSION"
   --build-arg "OPENCODE_VERSION=$OPENCODE_VERSION"
+  --build-arg "OVERLORD_VERSION=$OVERLORD_VERSION"
 )
 
 # Force a fresh npm fetch whenever any CLI tracks "latest".
-case "$CLAUDE_CODE_VERSION$CODEX_VERSION$OPENCODE_VERSION" in
+case "$CLAUDE_CODE_VERSION$CODEX_VERSION$OPENCODE_VERSION$OVERLORD_VERSION" in
   *latest*) BUILD_ARGS+=(--build-arg "CACHEBUST=$(date +%s)");;
 esac
 
@@ -42,6 +45,7 @@ info "Building image '$IMAGE'..."
 info "  claude-code: $CLAUDE_CODE_VERSION"
 info "  codex:       $CODEX_VERSION"
 info "  opencode:    $OPENCODE_VERSION"
+info "  overlord:    $OVERLORD_VERSION"
 info "  cursor:      latest (vendor installer)"
 
 docker build "${BUILD_ARGS[@]}" -t "$IMAGE" "$DIR" \
@@ -52,7 +56,7 @@ ok "Image '$IMAGE' built."
 # Best-effort version report (non-fatal; some CLIs may probe the network or
 # block, so each probe is bounded by a timeout and never aborts the script).
 info "Installed versions:"
-for probe in "claude --version" "codex --version" "opencode --version" "cursor-agent --version"; do
+for probe in "claude --version" "codex --version" "opencode --version" "ovld version" "cursor-agent --version"; do
   out="$(docker run --rm "$IMAGE" sh -lc "timeout 10 $probe </dev/null" 2>/dev/null || true)"
   printf '  %-12s %s\n' "${probe%% *}:" "${out:-"(unavailable)"}"
 done
@@ -68,6 +72,7 @@ $(ok "Done.") Next steps:
   agent-pod claude          # Claude Code
   agent-pod codex           # OpenAI Codex
   agent-pod opencode        # OpenCode
+  agent-pod overlord        # Overlord
   agent-pod cursor          # Cursor Agent
   agent-pod shell           # a plain shell in the sandbox
 EOF

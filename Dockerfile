@@ -1,4 +1,4 @@
-# AgentPod — a single image that ships the four supported agent CLIs.
+# AgentPod — a single image that ships the five supported agent CLIs.
 #
 # We deliberately do NOT bake in a user with `USER`. The launcher passes
 # `--user "$(id -u):$(id -g)"` at runtime so files created inside the container
@@ -13,6 +13,7 @@ FROM node:24-slim
 ARG CLAUDE_CODE_VERSION=latest
 ARG CODEX_VERSION=latest
 ARG OPENCODE_VERSION=latest
+ARG OVERLORD_VERSION=latest
 
 # Baseline dev tooling. git/curl/less are table stakes; jq + gh are reached for
 # by the agents' built-in workflows (JSON pipelines, GitHub PRs/issues).
@@ -26,13 +27,14 @@ RUN apt-get update \
 # is requested, forcing npm to refetch instead of reusing a stale layer.
 ARG CACHEBUST=1
 
-# Node-based CLIs: Claude Code, OpenAI Codex, OpenCode.
+# Node-based CLIs: Claude Code, OpenAI Codex, OpenCode, Overlord.
 # Installed in separate layers so a single failing package is easy to spot in
 # the build log (and doesn't invalidate the others' cache). --no-audit/--no-fund
 # keep output focused on real errors.
 RUN npm install -g --no-audit --no-fund "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
 RUN npm install -g --no-audit --no-fund "@openai/codex@${CODEX_VERSION}"
 RUN npm install -g --no-audit --no-fund "opencode-ai@${OPENCODE_VERSION}"
+RUN npm install -g --no-audit --no-fund "overlord-cli@${OVERLORD_VERSION}"
 RUN npm cache clean --force
 
 # Cursor Agent ships its own installer/runtime rather than an npm package.
