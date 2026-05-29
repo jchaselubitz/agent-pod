@@ -49,10 +49,11 @@ docker build "${BUILD_ARGS[@]}" -t "$IMAGE" "$DIR" \
 
 ok "Image '$IMAGE' built."
 
-# Best-effort version report (non-fatal; some CLIs may probe the network).
+# Best-effort version report (non-fatal; some CLIs may probe the network or
+# block, so each probe is bounded by a timeout and never aborts the script).
 info "Installed versions:"
 for probe in "claude --version" "codex --version" "opencode --version" "cursor-agent --version"; do
-  out="$(docker run --rm "$IMAGE" sh -lc "$probe" 2>/dev/null || true)"
+  out="$(docker run --rm "$IMAGE" sh -lc "timeout 10 $probe </dev/null" 2>/dev/null || true)"
   printf '  %-12s %s\n' "${probe%% *}:" "${out:-"(unavailable)"}"
 done
 
