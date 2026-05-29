@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+#
+# agent-pod — run an AI coding-agent CLI inside a throwaway Docker container
+# that can only see the current project directory.
+#
+# Supported agents: claude (Claude Code), codex (OpenAI Codex),
+#                   opencode (OpenCode), cursor (Cursor Agent).
+#
+# Only $PWD is mounted in. Per-agent auth/history is persisted on the host
+# under ~/.agent-pod/<agent>. Everything else (your home dir, SSH keys, other
+# projects) stays invisible to the agent.
+#
+# NOTE: outbound network access inside the container is NOT restricted.
+
+set -eo pipefail
+
+IMAGE="${AGENT_POD_IMAGE:-agent-pod}"
+STATE_ROOT="${AGENT_POD_HOME:-$HOME/.agent-pod}"
+CONTAINER_HOME="/home/agent-pod"
+
+# ---- pretty output (auto-disabled when stderr is not a TTY) ---------------
+if [ -t 2 ]; then
+  C_INFO=$'\033[34m'; C_OK=$'\033[32m'; C_ERR=$'\033[31m'; C_DIM=$'\033[2m'; C_OFF=$'\033[0m'
+else
+  C_INFO=""; C_OK=""; C_ERR=""; C_DIM=""; C_OFF=""
+fi
+info() { printf '%s%s%s\n' "$C_INFO" "$*" "$C_OFF" >&2; }
+ok()   { printf '%s%s%s\n' "$C_OK"   "$*" "$C_OFF" >&2; }
+warn() { printf '%s%s%s\n' "$C_DIM"  "$*" "$C_OFF" >&2; }
+die()  { printf '%s%s%s\n' "$C_ERR"  "$*" "$C_OFF" >&2; exit 1; }
+
+usage() {
+  cat >&2 <<EOF
+agent-pod — sandboxed AI coding agents in Docker
+
+Usage:
+  agent-pod <agent> [args...]    Run an agent in the current directory
+  agent-pod shell                Open a shell inside the sandbox
+  agent-pod --help
+
+Agents:
+  claude     Claude Code      (claude --dangerously-skip-permissions)
+  codex      OpenAI Codex     (codex --dangerously-bypass-approvals-and-sandbox)
+  opencode   OpenCode         (opencode)
+  cursor     Cursor Agent     (cursor-agent --force)
+
+Anything after the agent name is passed straight through to the CLI, e.g.
+  agent-pod claude -p "summarize this repo"
+  agent-pod codex exec "run the tests"
+
+Environment:
+  PORTS=3000,8080        Publish container ports on 127.0.0.1 only
+  AGENT_POD_YOLO=0       Do not add the auto-approve flags shown above
+  AGENT_POD_IMAGE=name   Image to run (default: agent-pod)
+  AGENT_POD_HOME=path    State directory (default: ~/.agent-pod)
+
+Auth: log in interactively once (it persists), or export a provider key
+(ANTHROPIC_API_KEY, OPENAI_API_KEY, CURSOR_API_KEY, ...) and it is forwarded
+into the container automatically.
+
+Only the current directory is mounted in:
+  $PWD
+EOF
+}
+
+# ---- argument parsing -----------------------------------------------------
+[ $# -ge 1 ] || { usage; exit 1; }
+case "$1" in -h|--help|help) usage; exit 0;; esac
+
+AGENT="$1"; shift
+
+# Map agent -> binary + default auto-approve ("yolo") flags.
+YOLO=()
+case "$AGENT" in
+  claude)   BIN="claude";       YOLO=(--dangerously-skip-permissions);;
+  codex)    BIN="codex";        YOLO=(--dangerously-bypass-approvals-and-sandbox);;
+  opencode) BIN="opencode";     YOLO=();;
+  cursor)   BIN="cursor-agent"; YOLO=(--force);;
+  shell)    BIN="bash";         YOLO=();;
+  *) die "Unknown agent '$AGENT'. Choose: claude, codex, opencode, cursor, shell";;
+esac
+
+[ "${AGENT_POD_YOLO:-1}" = "0" ] && YOLO=()
+
+# ---- preflight ------------------------------------------------------------
+command -v docker >/dev/null 2>&1 || die "Docker is not installed or not on PATH."
+docker info >/dev/null 2>&1       || die "Docker daemon is not running. Start Docker and retry."
+docker image inspect "$IMAGE" >/dev/null 2>&1 \
+  || die "Image '$IMAGE' not found. Build it first:  ./install.sh"
+
+# ---- per-agent state dir (becomes the container's HOME) --------------------
+STATE_DIR="$STATE_ROOT/$AGENT"
+mkdir -p "$STATE_DIR"
+# Owner-only: this holds auth tokens and conversation transcripts.
+chmod 700 "$STATE_ROOT" "$STATE_DIR" 2>/dev/null || true
+
+# ---- TTY handling ---------------------------------------------------------
+# Always forward stdin (-i) so piping works; only allocate a pty (-t) when both
+# ends are real terminals.
+TTY_FLAGS=(-i)
+if [ -t 0 ] && [ -t 1 ]; then TTY_FLAGS+=(-t); fi
+
+# ---- port publishing ------------------------------------------------------
+PORT_FLAGS=()
+if [ -n "${PORTS:-}" ]; then
+  OLDIFS="$IFS"; IFS=','
+  for p in $PORTS; do
+    p="${p// /}"
+    [ -z "$p" ] && continue
+    case "$p" in *[!0-9]*) die "Invalid port: '$p'";; esac
+    { [ "$p" -ge 1 ] && [ "$p" -le 65535 ]; } || die "Port out of range (1-65535): $p"
+    PORT_FLAGS+=(-p "127.0.0.1:$p:$p")
+  done
+  IFS="$OLDIFS"
+fi
+
+# ---- forward known provider / tooling credentials (only if set) ----------
+ENV_FLAGS=()
+for v in \
+  ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL \
+  OPENAI_API_KEY OPENAI_BASE_URL OPENAI_ORGANIZATION \
+  CURSOR_API_KEY \
+  GEMINI_API_KEY GOOGLE_API_KEY OPENROUTER_API_KEY GROQ_API_KEY \
+  XAI_API_KEY DEEPSEEK_API_KEY MISTRAL_API_KEY \
+  GITHUB_TOKEN GH_TOKEN; do
+  [ -n "${!v:-}" ] && ENV_FLAGS+=(-e "$v")
+done
+
+# ---- assemble the command -------------------------------------------------
+CMD=("$BIN")
+[ ${#YOLO[@]} -gt 0 ] && CMD+=("${YOLO[@]}")
+[ $# -gt 0 ] && CMD+=("$@")
+
+info "agent-pod: running '$AGENT' in $PWD"
+info "  state: $STATE_DIR"
+
+exec docker run --rm \
+  "${TTY_FLAGS[@]}" \
+  --user "$(id -u):$(id -g)" \
+  -e HOME="$CONTAINER_HOME" \
+  -e TERM="${TERM:-xterm-256color}" \
+  "${ENV_FLAGS[@]}" \
+  -v "$STATE_DIR:$CONTAINER_HOME" \
+  -v "$PWD:$PWD" \
+  -w "$PWD" \
+  "${PORT_FLAGS[@]}" \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  "$IMAGE" \
+  "${CMD[@]}"
