@@ -27,11 +27,13 @@ RUN apt-get update \
 ARG CACHEBUST=1
 
 # Node-based CLIs: Claude Code, OpenAI Codex, OpenCode.
-RUN npm install -g \
-      "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
-      "@openai/codex@${CODEX_VERSION}" \
-      "opencode-ai@${OPENCODE_VERSION}" \
- && npm cache clean --force
+# Installed in separate layers so a single failing package is easy to spot in
+# the build log (and doesn't invalidate the others' cache). --no-audit/--no-fund
+# keep output focused on real errors.
+RUN npm install -g --no-audit --no-fund "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+RUN npm install -g --no-audit --no-fund "@openai/codex@${CODEX_VERSION}"
+RUN npm install -g --no-audit --no-fund "opencode-ai@${OPENCODE_VERSION}"
+RUN npm cache clean --force
 
 # Cursor Agent ships its own installer/runtime rather than an npm package.
 # Install it as root, relocate the runtime to /opt, and expose a global symlink
