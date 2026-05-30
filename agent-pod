@@ -181,6 +181,23 @@ open_in_editor() {
   fi
 }
 
+run_edit_env() {
+  # Open the active env file in the user's editor. Creates the file (and its
+  # parent directory) if it doesn't exist yet.
+  target="${ENV_FILE:-$CONFIG_ENV_FILE}"
+  mkdir -p "$(dirname "$target")" 2>/dev/null || true
+  if [ ! -f "$target" ]; then
+    : > "$target"
+    chmod 600 "$target" 2>/dev/null || true
+    ok "Created $target"
+  fi
+  if open_in_editor "$target"; then
+    ok "Opened $target"
+  else
+    die "Could not open an editor automatically. Edit this file manually: $target"
+  fi
+}
+
 run_setup() {
   # Store config with the CLI (~/.agent-pod/agent-pod.env) by default rather
   # than dropping a file into the current working directory.
@@ -295,6 +312,7 @@ Usage:
   agent-pod <agent> [args...]    Run an agent in the current directory
   agent-pod shell                Open a shell inside the sandbox
   agent-pod setup                Create/edit ~/.agent-pod/agent-pod.env
+  agent-pod edit-env             Open the active env file in your editor
   agent-pod install-image        Build the Docker image used by agent-pod
   agent-pod uninstall            Remove the Docker image and ~/.agent-pod state
   agent-pod --help
@@ -349,6 +367,7 @@ AGENT_POD_ENV_VALUE="$(config_value AGENT_POD_ENV "${AGENT_POD_ENV:-}")"
 case "$1" in -h|--help|help) usage; exit 0;; esac
 case "$1" in
   setup) run_setup; exit 0;;
+  edit-env) run_edit_env; exit 0;;
   install-image)
     exec "$LAUNCHER_DIR/install.sh"
     ;;
