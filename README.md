@@ -43,7 +43,7 @@ radius to a single directory:
 ### 1. Install the npm package
 
 ```bash
-npm install -g agent-pod
+npm install -g agent-pod-cli
 ```
 
 Then build the local Docker image that contains the supported agent CLIs:
