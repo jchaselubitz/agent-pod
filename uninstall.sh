@@ -49,3 +49,15 @@ else
 fi
 
 ok "Done."
+
+cat <<EOF
+
+To also remove the npm package and the 'agent-pod' command, run:
+
+  npm uninstall -g agent-pod-cli
+
+(Use -g. A local, non-global install lives inside another project's
+node_modules, and 'npm uninstall agent-pod-cli' there has to rebuild that
+project's dependency tree — which fails if the project has unrelated peer
+dependency conflicts.)
+EOF

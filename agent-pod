@@ -29,6 +29,13 @@ while [ -h "$SOURCE" ]; do
 done
 LAUNCHER_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 
+# Where AgentPod keeps its own per-user state and config. This lives with the
+# CLI (one stable location per user), not in whatever directory you happen to
+# run from. AGENT_POD_HOME must be a real environment variable to relocate it,
+# since we need it before any env-file is loaded.
+CONFIG_HOME="${AGENT_POD_HOME:-$HOME/.agent-pod}"
+CONFIG_ENV_FILE="$CONFIG_HOME/agent-pod.env"
+
 # ---- pretty output (auto-disabled when stderr is not a TTY) ---------------
 if [ -t 2 ]; then
   C_INFO=$'\033[34m'; C_OK=$'\033[32m'; C_ERR=$'\033[31m'; C_DIM=$'\033[2m'; C_OFF=$'\033[0m'
@@ -41,8 +48,15 @@ warn() { printf '%s%s%s\n' "$C_DIM"  "$*" "$C_OFF" >&2; }
 die()  { printf '%s%s%s\n' "$C_ERR"  "$*" "$C_OFF" >&2; exit 1; }
 
 discover_env_file() {
+  # Resolution order, most to least specific:
+  #   1. AGENT_POD_ENV_FILE        explicit override
+  #   2. ~/.agent-pod/agent-pod.env  central config that lives with the CLI
+  #   3. cwd .agent-pod.env / agent-pod.env   legacy project-local files
+  #   4. launcher-dir files                    legacy source-checkout files
   if [ -n "${AGENT_POD_ENV_FILE:-}" ]; then
     printf '%s\n' "$AGENT_POD_ENV_FILE"
+  elif [ -f "$CONFIG_ENV_FILE" ]; then
+    printf '%s\n' "$CONFIG_ENV_FILE"
   elif [ -f ".agent-pod.env" ]; then
     printf '%s\n' ".agent-pod.env"
   elif [ -f "agent-pod.env" ]; then
@@ -168,7 +182,10 @@ open_in_editor() {
 }
 
 run_setup() {
-  env_file="${AGENT_POD_ENV_FILE:-.agent-pod.env}"
+  # Store config with the CLI (~/.agent-pod/agent-pod.env) by default rather
+  # than dropping a file into the current working directory.
+  env_file="${AGENT_POD_ENV_FILE:-$CONFIG_ENV_FILE}"
+  mkdir -p "$(dirname "$env_file")" 2>/dev/null || true
   if [ ! -f "$env_file" ]; then
     if [ -f "$LAUNCHER_DIR/.agent-pod.env.example" ]; then
       cp "$LAUNCHER_DIR/.agent-pod.env.example" "$env_file"
@@ -228,15 +245,15 @@ EOF
   fi
 
   if [ ! -t 0 ]; then
-    info "Edit when ready: $PWD/$env_file"
+    info "Edit when ready: $env_file"
   elif prompt_yes_no "Open $env_file now?" "yes"; then
     if open_in_editor "$env_file"; then
       ok "Opened $env_file"
     else
-      warn "Could not open an editor automatically. Edit this file manually: $PWD/$env_file"
+      warn "Could not open an editor automatically. Edit this file manually: $env_file"
     fi
   else
-    info "Edit when ready: $PWD/$env_file"
+    info "Edit when ready: $env_file"
   fi
 }
 
@@ -247,8 +264,9 @@ agent-pod — sandboxed AI coding agents in Docker
 Usage:
   agent-pod <agent> [args...]    Run an agent in the current directory
   agent-pod shell                Open a shell inside the sandbox
-  agent-pod setup                Create/edit .agent-pod.env for this project
+  agent-pod setup                Create/edit ~/.agent-pod/agent-pod.env
   agent-pod install-image        Build the Docker image used by agent-pod
+  agent-pod uninstall            Remove the Docker image and ~/.agent-pod state
   agent-pod --help
 
 Agents:
@@ -269,7 +287,8 @@ Environment:
   AGENT_POD_ENV=FOO,BAR  Forward additional host environment variables
   AGENT_POD_ENV_FILE=path
                          Load env vars from a Docker env-file
-                         (default: project env, then launcher env)
+                         (default: ~/.agent-pod/agent-pod.env, then any
+                          legacy project/launcher env file)
   AGENT_POD_YOLO=0       Do not add any AgentPod auto-approve flags
   AGENT_POD_<AGENT>_AUTO_FLAGS=0
                          Do not add the default flag for one agent
@@ -302,6 +321,9 @@ case "$1" in
   setup) run_setup; exit 0;;
   install-image)
     exec "$LAUNCHER_DIR/install.sh"
+    ;;
+  uninstall)
+    exec "$LAUNCHER_DIR/uninstall.sh"
     ;;
 esac
 

@@ -52,17 +52,21 @@ Then build the local Docker image that contains the supported agent CLIs:
 agent-pod install-image
 ```
 
-Run the setup flow in any project where you want a local AgentPod config:
+Run the setup flow once to create your AgentPod config:
 
 ```bash
-cd /path/to/your/project
 agent-pod setup
 ```
 
-`agent-pod setup` creates or updates `.agent-pod.env`, asks whether AgentPod
-should add each agent's default autonomous flag, prompts for an Overlord agent
-token when you use Overlord to manage agents, and opens the file in your editor
-when possible.
+`agent-pod setup` creates or updates `~/.agent-pod/agent-pod.env` — a single
+config file that lives with the CLI, not in whatever directory you run from —
+asks whether AgentPod should add each agent's default autonomous flag, prompts
+for an Overlord agent token when you use Overlord to manage agents, and opens
+the file in your editor when possible.
+
+> Make sure you install with `-g`. Without it, `npm install agent-pod-cli`
+> drops the package into the current project's `node_modules` instead of your
+> user-level npm folder, and the `agent-pod` command won't be on your PATH.
 
 ### Alternative: clone and build from source
 
@@ -188,28 +192,29 @@ Two options, both persist across runs in `~/.agent-pod/<agent>/`:
    `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CURSOR_API_KEY`, `GEMINI_API_KEY`,
    `OPENROUTER_API_KEY`, `GROQ_API_KEY`, `GITHUB_TOKEN`, and more.
 
-For secrets or API keys you want every pod to receive, create `.agent-pod.env`
-next to the `agent-pod` launcher:
-
-```bash
-cd /path/to/agent-pod
-cp .agent-pod.env.example .agent-pod.env
-```
-
-For project-specific secrets, create `.agent-pod.env` in the project root you
-run `agent-pod` from:
+For secrets or API keys you want every pod to receive, put them in the central
+config file that `agent-pod setup` manages:
 
 ```dotenv
+# ~/.agent-pod/agent-pod.env
 OPENAI_API_KEY=sk-...
 STRIPE_SECRET_KEY=sk_test_...
 ```
 
-`agent-pod` first checks the current project for `.agent-pod.env`, then
-`agent-pod.env`; if neither exists, it checks the launcher directory for the
-same filenames. Project-local files take precedence over the central launcher
-file. The dotted name is preferred because it is already ignored by many
-editor/project conventions. These values are loaded when the container starts,
-so restart `agent-pod` after editing the file.
+`agent-pod` resolves the env-file in this order, using the first that exists:
+
+1. `AGENT_POD_ENV_FILE`, if set — an explicit override.
+2. `~/.agent-pod/agent-pod.env` — the central config that lives with the CLI.
+3. `.agent-pod.env`, then `agent-pod.env`, in the current project directory —
+   legacy project-local files, still honored if present.
+4. `.agent-pod.env`, then `agent-pod.env`, next to the launcher — legacy
+   source-checkout files.
+
+The central file is the default and what `setup` writes, so the same config
+applies no matter which directory you launch from. For a project-specific
+override, set `AGENT_POD_ENV_FILE` or keep a `.agent-pod.env` in that project
+root. These values are loaded when the container starts, so restart
+`agent-pod` after editing the file.
 
 To use a different file:
 
@@ -246,7 +251,7 @@ to `0.0.0.0` (not `localhost`) to be reachable from the host.
 |----------|---------|---------|
 | `PORTS` | _(none)_ | Comma-separated ports to publish on localhost |
 | `AGENT_POD_ENV` | _(none)_ | Comma- or space-separated host env var names to forward |
-| `AGENT_POD_ENV_FILE` | project `.agent-pod.env`, project `agent-pod.env`, launcher `.agent-pod.env`, launcher `agent-pod.env` | Docker env-file to load into the container |
+| `AGENT_POD_ENV_FILE` | `~/.agent-pod/agent-pod.env`, then legacy project/launcher files | Docker env-file to load into the container |
 | `AGENT_POD_YOLO` | `1` | Set to `0` to drop the auto-approve flags |
 | `AGENT_POD_CLAUDE_AUTO_FLAGS` | `1` | Set to `0` to omit `--dangerously-skip-permissions` |
 | `AGENT_POD_CODEX_AUTO_FLAGS` | `1` | Set to `0` to omit `--dangerously-bypass-approvals-and-sandbox` |
@@ -259,7 +264,8 @@ to `0.0.0.0` (not `localhost`) to be reachable from the host.
 | `AGENT_POD_NPM_PACKAGES` | _(none)_ | Extra global npm packages to bake into the image at install time |
 
 `agent-pod setup` writes the per-agent autonomous flag choices into
-`.agent-pod.env`. Shell environment values still win over values from the file.
+`~/.agent-pod/agent-pod.env`. Shell environment values still win over values
+from the file.
 
 ## How it works
 
@@ -274,7 +280,7 @@ docker run --rm -i [-t] \
   --user "$(id -u):$(id -g)" \
   -e HOME=/home/agent-pod \
   -e NPM_CONFIG_PREFIX=/home/agent-pod/.npm-global \
-  [--env-file .agent-pod.env] \
+  [--env-file ~/.agent-pod/agent-pod.env] \
   -v ~/.agent-pod/<agent>:/home/agent-pod \   # persisted auth + history
   -v "$PWD:$PWD" -w "$PWD" \                   # only the current project
   --cap-drop ALL --security-opt no-new-privileges \
@@ -291,9 +297,29 @@ across runs.
 
 ## Uninstall
 
+Remove the Docker image and per-user state (`~/.agent-pod`), then remove the
+npm package:
+
 ```bash
-./uninstall.sh   # removes the image and ~/.agent-pod (prompts first)
+agent-pod uninstall          # removes the image and ~/.agent-pod (prompts first)
+npm uninstall -g agent-pod-cli
 ```
+
+From a source checkout, `./uninstall.sh` does the same as `agent-pod uninstall`.
+
+> **`npm uninstall` fails with `ERESOLVE`?** That happens when the package was
+> installed *locally* (without `-g`) into a project, because `npm uninstall`
+> then has to rebuild that project's whole dependency tree — which fails if the
+> project has any unrelated peer-dependency conflicts. Install and uninstall
+> globally with `-g` so npm only touches your user-level npm folder:
+>
+> ```bash
+> npm uninstall -g agent-pod-cli
+> ```
+>
+> If you did install it locally, remove it from that project the same way you
+> would any stuck dependency, e.g. `npm uninstall agent-pod-cli --no-save` or
+> by deleting the entry from `package.json` and the `node_modules` folder.
 
 ## Limitations
 
