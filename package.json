@@ -1,0 +1,27 @@
+{
+  "name": "agent-pod",
+  "version": "0.1.0",
+  "description": "Run AI coding-agent CLIs inside a Docker sandbox scoped to the current project.",
+  "author": "Jake Chase-Lubitz",
+  "bin": {
+    "agent-pod": "agent-pod"
+  },
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js",
+    "pack:check": "npm pack --dry-run",
+    "test": "bash -n agent-pod install.sh uninstall.sh",
+    "publish": "npm publish"
+  },
+  "keywords": [
+    "agent",
+    "codex",
+    "claude",
+    "cursor",
+    "docker",
+    "sandbox"
+  ],
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=18"
+  }
+}

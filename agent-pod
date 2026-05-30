@@ -230,8 +230,10 @@ Agents:
   claude     Claude Code      (claude; optional --dangerously-skip-permissions)
   codex      OpenAI Codex     (codex; optional --dangerously-bypass-approvals-and-sandbox)
   opencode   OpenCode         (opencode)
-  overlord   Overlord         (ovld)
   cursor     Cursor Agent     (cursor-agent; optional --force)
+
+Agent managers:
+  ovld   Overlord         (ovld)
 
 Anything after the agent name is passed straight through to the CLI, e.g.
   agent-pod claude -p "summarize this repo"
@@ -286,10 +288,9 @@ case "$AGENT" in
   claude)   BIN="claude";       YOLO=(--dangerously-skip-permissions);;
   codex)    BIN="codex";        YOLO=(--dangerously-bypass-approvals-and-sandbox);;
   opencode) BIN="opencode";     YOLO=();;
-  overlord) BIN="ovld";         YOLO=();;
   cursor)   BIN="cursor-agent"; YOLO=(--force);;
   shell)    BIN="bash";         YOLO=();;
-  *) die "Unknown agent '$AGENT'. Choose: claude, codex, opencode, overlord, cursor, shell";;
+  *) die "Unknown agent '$AGENT'. Choose: claude, codex, opencode, cursor, shell";;
 esac
 
 [ "$(config_value AGENT_POD_YOLO 1)" = "0" ] && YOLO=()
