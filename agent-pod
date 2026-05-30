@@ -255,6 +255,36 @@ EOF
   else
     info "Edit when ready: $env_file"
   fi
+
+  offer_image_build
+}
+
+# Conclude setup by getting the sandbox image ready. Agents can't run until the
+# image exists, so we offer to build it now rather than letting the user hit
+# "Image not found" the first time they launch an agent.
+offer_image_build() {
+  printf '\n' >&2
+  if ! command -v docker >/dev/null 2>&1; then
+    info "Docker isn't installed yet. Once it is, build the image with: agent-pod install-image"
+    return 0
+  fi
+  if ! docker info >/dev/null 2>&1; then
+    info "Docker is installed but not running. Start it, then run: agent-pod install-image"
+    return 0
+  fi
+  if docker image inspect "$IMAGE" >/dev/null 2>&1; then
+    ok "Image '$IMAGE' is already built. Rebuild anytime with: agent-pod install-image"
+    return 0
+  fi
+  if prompt_yes_no "Build the agent-pod Docker image now so it's ready for agents? (may take several minutes)" "yes"; then
+    if [ -x "$LAUNCHER_DIR/install.sh" ]; then
+      "$LAUNCHER_DIR/install.sh" || warn "Image build failed. Retry later with: agent-pod install-image"
+    else
+      warn "Could not find install.sh next to the launcher. Build later with: agent-pod install-image"
+    fi
+  else
+    info "Build later with: agent-pod install-image"
+  fi
 }
 
 usage() {

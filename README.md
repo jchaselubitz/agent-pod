@@ -46,23 +46,31 @@ radius to a single directory:
 npm install -g agent-pod-cli
 ```
 
-Then build the local Docker image that contains the supported agent CLIs:
+When you install from an interactive terminal, the package launches
+`agent-pod setup` for you automatically and, at the end of setup, offers to
+build the Docker image. If your environment hides the install output (some npm
+versions, CI, non-interactive shells) the setup flow is skipped — just run the
+two commands below yourself. Set `AGENT_POD_SKIP_SETUP=1` before installing to
+always skip the auto-launch.
 
 ```bash
-agent-pod install-image
+agent-pod setup          # create ~/.agent-pod/agent-pod.env (auto-runs on install)
+agent-pod install-image  # build the Docker image with the agent CLIs
 ```
 
-Run the setup flow once to create your AgentPod config:
-
-```bash
-agent-pod setup
-```
+If `OVERLORD_AGENT_TOKEN` is set in your environment or `~/.agent-pod/agent-pod.env`,
+`agent-pod install-image` also runs `ovld setup all` once for each agent's state
+directory after the build. That installs the Overlord connectors and pre-approves
+the `ovld protocol` commands the agents run (the permission prompt is auto-accepted
+because the setup runs non-interactively), so agents launched via AgentPod can drive
+Overlord tickets without stopping for permission prompts.
 
 `agent-pod setup` creates or updates `~/.agent-pod/agent-pod.env` — a single
 config file that lives with the CLI, not in whatever directory you run from —
 asks whether AgentPod should add each agent's default autonomous flag, prompts
-for an Overlord agent token when you use Overlord to manage agents, and opens
-the file in your editor when possible.
+for an Overlord agent token when you use Overlord to manage agents, opens the
+file in your editor when possible, and finally offers to build the Docker image
+now so it's ready the first time you launch an agent.
 
 > Make sure you install with `-g`. Without it, `npm install agent-pod-cli`
 > drops the package into the current project's `node_modules` instead of your
