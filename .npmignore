@@ -1,0 +1,4 @@
+.agent-pod.env
+agent-pod.env
+.git/
+.overlord/

@@ -140,6 +140,14 @@ prompt_yes_no() {
   done
 }
 
+prompt_text() {
+  prompt="$1"
+  [ -t 0 ] || return 1
+  printf '%s ' "$prompt" >&2
+  read -r reply
+  printf '%s\n' "$reply"
+}
+
 open_in_editor() {
   file="$1"
   if [ -n "${VISUAL:-}" ]; then
@@ -200,6 +208,23 @@ EOF
     upsert_env_var "$env_file" AGENT_POD_CURSOR_AUTO_FLAGS 1
   else
     upsert_env_var "$env_file" AGENT_POD_CURSOR_AUTO_FLAGS 0
+  fi
+
+  if prompt_yes_no "Do you use Overlord to manage agents?" "yes"; then
+    current_overlord_token="$(dotenv_get OVERLORD_AGENT_TOKEN "$env_file" 2>/dev/null || true)"
+    if [ -n "$current_overlord_token" ]; then
+      token_prompt="Overlord agent token [leave blank to keep existing]:"
+    else
+      token_prompt="Overlord agent token [leave blank to skip]:"
+    fi
+    overlord_token="$(prompt_text "$token_prompt" || true)"
+    if [ -n "$overlord_token" ]; then
+      upsert_env_var "$env_file" OVERLORD_AGENT_TOKEN "$overlord_token"
+    elif [ -z "$current_overlord_token" ]; then
+      upsert_env_var "$env_file" OVERLORD_AGENT_TOKEN ""
+    fi
+  else
+    info "You should: https://www.ovld.ai"
   fi
 
   if [ ! -t 0 ]; then

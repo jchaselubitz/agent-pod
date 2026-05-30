@@ -60,8 +60,9 @@ agent-pod setup
 ```
 
 `agent-pod setup` creates or updates `.agent-pod.env`, asks whether AgentPod
-should add each agent's default autonomous flag, and opens the file in your
-editor when possible.
+should add each agent's default autonomous flag, prompts for an Overlord agent
+token when you use Overlord to manage agents, and opens the file in your editor
+when possible.
 
 ### Alternative: clone and build from source
 
@@ -129,6 +130,16 @@ Or symlink it into a directory already on your PATH:
 ```bash
 ln -s "$PWD/agent-pod" /usr/local/bin/agent-pod
 ```
+
+You can also install a source checkout globally with npm:
+
+```bash
+npm install -g .
+```
+
+AgentPod configures local npm installs to copy the package into npm's global
+prefix, so the installed command does not depend on the checkout remaining in
+place.
 
 ### Verify
 
