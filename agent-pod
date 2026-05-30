@@ -14,8 +14,6 @@
 
 set -eo pipefail
 
-IMAGE="${AGENT_POD_IMAGE:-agent-pod}"
-STATE_ROOT="${AGENT_POD_HOME:-$HOME/.agent-pod}"
 CONTAINER_HOME="/home/agent-pod"
 CONTAINER_NPM_PREFIX="$CONTAINER_HOME/.npm-global"
 CONTAINER_PATH="$CONTAINER_NPM_PREFIX/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -42,6 +40,181 @@ ok()   { printf '%s%s%s\n' "$C_OK"   "$*" "$C_OFF" >&2; }
 warn() { printf '%s%s%s\n' "$C_DIM"  "$*" "$C_OFF" >&2; }
 die()  { printf '%s%s%s\n' "$C_ERR"  "$*" "$C_OFF" >&2; exit 1; }
 
+discover_env_file() {
+  if [ -n "${AGENT_POD_ENV_FILE:-}" ]; then
+    printf '%s\n' "$AGENT_POD_ENV_FILE"
+  elif [ -f ".agent-pod.env" ]; then
+    printf '%s\n' ".agent-pod.env"
+  elif [ -f "agent-pod.env" ]; then
+    printf '%s\n' "agent-pod.env"
+  elif [ -f "$LAUNCHER_DIR/.agent-pod.env" ]; then
+    printf '%s\n' "$LAUNCHER_DIR/.agent-pod.env"
+  elif [ -f "$LAUNCHER_DIR/agent-pod.env" ]; then
+    printf '%s\n' "$LAUNCHER_DIR/agent-pod.env"
+  fi
+}
+
+dotenv_get() {
+  key="$1"
+  file="${2:-}"
+  [ -n "$file" ] && [ -f "$file" ] || return 1
+  awk -v key="$key" '
+    /^[[:space:]]*(#|$)/ { next }
+    {
+      line=$0
+      sub(/^[[:space:]]*export[[:space:]]+/, "", line)
+      split(line, parts, "=")
+      k=parts[1]
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", k)
+      if (k == key) {
+        sub(/^[^=]*=/, "", line)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+        if (line ~ /^".*"$/ || line ~ /^'\''.*'\''$/) {
+          line=substr(line, 2, length(line)-2)
+        }
+        print line
+        found=1
+      }
+    }
+    END { exit found ? 0 : 1 }
+  ' "$file"
+}
+
+config_value() {
+  key="$1"
+  default_value="${2:-}"
+  if [ -n "${!key+x}" ]; then
+    printf '%s\n' "${!key}"
+  elif value="$(dotenv_get "$key" "$ENV_FILE" 2>/dev/null)"; then
+    printf '%s\n' "$value"
+  else
+    printf '%s\n' "$default_value"
+  fi
+}
+
+truthy() {
+  case "$1" in
+    1|true|TRUE|yes|YES|y|Y|on|ON) return 0;;
+    *) return 1;;
+  esac
+}
+
+upsert_env_var() {
+  file="$1"
+  key="$2"
+  value="$3"
+  tmp="${file}.tmp.$$"
+  if [ -f "$file" ] && grep -Eq "^[[:space:]]*(export[[:space:]]+)?${key}=" "$file"; then
+    awk -v key="$key" -v value="$value" '
+      BEGIN { done=0 }
+      $0 ~ "^[[:space:]]*(export[[:space:]]+)?" key "=" {
+        if (!done) {
+          print key "=" value
+          done=1
+        }
+        next
+      }
+      { print }
+    ' "$file" > "$tmp"
+  else
+    [ -f "$file" ] && cp "$file" "$tmp" || : > "$tmp"
+    printf '%s=%s\n' "$key" "$value" >> "$tmp"
+  fi
+  mv "$tmp" "$file"
+}
+
+prompt_yes_no() {
+  prompt="$1"
+  default="$2"
+  [ -t 0 ] || { [ "$default" = "yes" ]; return; }
+  if [ "$default" = "yes" ]; then suffix="[Y/n]"; else suffix="[y/N]"; fi
+  while true; do
+    printf '%s %s ' "$prompt" "$suffix" >&2
+    read -r reply
+    case "$reply" in
+      "") [ "$default" = "yes" ] && return 0 || return 1;;
+      y|Y|yes|YES) return 0;;
+      n|N|no|NO) return 1;;
+      *) warn "Please answer yes or no.";;
+    esac
+  done
+}
+
+open_in_editor() {
+  file="$1"
+  if [ -n "${VISUAL:-}" ]; then
+    "$VISUAL" "$file" || return 1
+  elif [ -n "${EDITOR:-}" ]; then
+    "$EDITOR" "$file" || return 1
+  elif command -v code >/dev/null 2>&1; then
+    code "$file" || return 1
+  elif command -v cursor >/dev/null 2>&1; then
+    cursor "$file" || return 1
+  elif command -v open >/dev/null 2>&1; then
+    open "$file" || return 1
+  elif command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "$file" || return 1
+  else
+    return 1
+  fi
+}
+
+run_setup() {
+  env_file="${AGENT_POD_ENV_FILE:-.agent-pod.env}"
+  if [ ! -f "$env_file" ]; then
+    if [ -f "$LAUNCHER_DIR/.agent-pod.env.example" ]; then
+      cp "$LAUNCHER_DIR/.agent-pod.env.example" "$env_file"
+    else
+      : > "$env_file"
+    fi
+    chmod 600 "$env_file" 2>/dev/null || true
+    ok "Created $env_file"
+  else
+    ok "Updating $env_file"
+  fi
+
+  if ! grep -q "AgentPod autonomous flag choices" "$env_file" 2>/dev/null; then
+    cat >> "$env_file" <<'EOF'
+
+# AgentPod autonomous flag choices.
+# Set a value to 0 to run that agent without AgentPod's default autonomous flag.
+EOF
+  fi
+
+  if prompt_yes_no "Use Claude Code autonomous flag (--dangerously-skip-permissions)?" "yes"; then
+    upsert_env_var "$env_file" AGENT_POD_CLAUDE_AUTO_FLAGS 1
+  else
+    upsert_env_var "$env_file" AGENT_POD_CLAUDE_AUTO_FLAGS 0
+  fi
+
+  if prompt_yes_no "Use OpenAI Codex autonomous flag (--dangerously-bypass-approvals-and-sandbox)?" "yes"; then
+    upsert_env_var "$env_file" AGENT_POD_CODEX_AUTO_FLAGS 1
+  else
+    upsert_env_var "$env_file" AGENT_POD_CODEX_AUTO_FLAGS 0
+  fi
+
+  upsert_env_var "$env_file" AGENT_POD_OPENCODE_AUTO_FLAGS 0
+  upsert_env_var "$env_file" AGENT_POD_OVERLORD_AUTO_FLAGS 0
+
+  if prompt_yes_no "Use Cursor Agent autonomous flag (--force)?" "yes"; then
+    upsert_env_var "$env_file" AGENT_POD_CURSOR_AUTO_FLAGS 1
+  else
+    upsert_env_var "$env_file" AGENT_POD_CURSOR_AUTO_FLAGS 0
+  fi
+
+  if [ ! -t 0 ]; then
+    info "Edit when ready: $PWD/$env_file"
+  elif prompt_yes_no "Open $env_file now?" "yes"; then
+    if open_in_editor "$env_file"; then
+      ok "Opened $env_file"
+    else
+      warn "Could not open an editor automatically. Edit this file manually: $PWD/$env_file"
+    fi
+  else
+    info "Edit when ready: $PWD/$env_file"
+  fi
+}
+
 usage() {
   cat >&2 <<EOF
 agent-pod — sandboxed AI coding agents in Docker
@@ -49,14 +222,16 @@ agent-pod — sandboxed AI coding agents in Docker
 Usage:
   agent-pod <agent> [args...]    Run an agent in the current directory
   agent-pod shell                Open a shell inside the sandbox
+  agent-pod setup                Create/edit .agent-pod.env for this project
+  agent-pod install-image        Build the Docker image used by agent-pod
   agent-pod --help
 
 Agents:
-  claude     Claude Code      (claude --dangerously-skip-permissions)
-  codex      OpenAI Codex     (codex --dangerously-bypass-approvals-and-sandbox)
+  claude     Claude Code      (claude; optional --dangerously-skip-permissions)
+  codex      OpenAI Codex     (codex; optional --dangerously-bypass-approvals-and-sandbox)
   opencode   OpenCode         (opencode)
   overlord   Overlord         (ovld)
-  cursor     Cursor Agent     (cursor-agent --force)
+  cursor     Cursor Agent     (cursor-agent; optional --force)
 
 Anything after the agent name is passed straight through to the CLI, e.g.
   agent-pod claude -p "summarize this repo"
@@ -68,7 +243,10 @@ Environment:
   AGENT_POD_ENV_FILE=path
                          Load env vars from a Docker env-file
                          (default: project env, then launcher env)
-  AGENT_POD_YOLO=0       Do not add the auto-approve flags shown above
+  AGENT_POD_YOLO=0       Do not add any AgentPod auto-approve flags
+  AGENT_POD_<AGENT>_AUTO_FLAGS=0
+                         Do not add the default flag for one agent
+                         (CLAUDE, CODEX, CURSOR)
   AGENT_POD_IMAGE=name   Image to run (default: agent-pod)
   AGENT_POD_HOME=path    State directory (default: ~/.agent-pod)
 
@@ -81,9 +259,24 @@ Only the current directory is mounted in:
 EOF
 }
 
+# Env-file ergonomics. Docker reads KEY=VALUE lines and comments. Prefer a
+# project-local file, then fall back to a central file next to this launcher.
+ENV_FILE="$(discover_env_file)"
+
+IMAGE="$(config_value AGENT_POD_IMAGE agent-pod)"
+STATE_ROOT="$(config_value AGENT_POD_HOME "$HOME/.agent-pod")"
+PORTS_VALUE="$(config_value PORTS "${PORTS:-}")"
+AGENT_POD_ENV_VALUE="$(config_value AGENT_POD_ENV "${AGENT_POD_ENV:-}")"
+
 # ---- argument parsing -----------------------------------------------------
 [ $# -ge 1 ] || { usage; exit 1; }
 case "$1" in -h|--help|help) usage; exit 0;; esac
+case "$1" in
+  setup) run_setup; exit 0;;
+  install-image)
+    exec "$LAUNCHER_DIR/install.sh"
+    ;;
+esac
 
 AGENT="$1"; shift
 
@@ -99,7 +292,12 @@ case "$AGENT" in
   *) die "Unknown agent '$AGENT'. Choose: claude, codex, opencode, overlord, cursor, shell";;
 esac
 
-[ "${AGENT_POD_YOLO:-1}" = "0" ] && YOLO=()
+[ "$(config_value AGENT_POD_YOLO 1)" = "0" ] && YOLO=()
+case "$AGENT" in
+  claude) truthy "$(config_value AGENT_POD_CLAUDE_AUTO_FLAGS 1)" || YOLO=();;
+  codex) truthy "$(config_value AGENT_POD_CODEX_AUTO_FLAGS 1)" || YOLO=();;
+  cursor) truthy "$(config_value AGENT_POD_CURSOR_AUTO_FLAGS 1)" || YOLO=();;
+esac
 
 # ---- preflight ------------------------------------------------------------
 command -v docker >/dev/null 2>&1 || die "Docker is not installed or not on PATH."
@@ -114,6 +312,18 @@ mkdir -p "$STATE_DIR/.npm-global"
 # Owner-only: this holds auth tokens and conversation transcripts.
 chmod 700 "$STATE_ROOT" "$STATE_DIR" 2>/dev/null || true
 
+# ---- git identity (written to the container's ~/.gitconfig) ---------------
+GIT_USER_EMAIL_VALUE="$(config_value GIT_USER_EMAIL "")"
+GIT_USER_NAME_VALUE="$(config_value GIT_USER_NAME "")"
+if [ -n "$GIT_USER_EMAIL_VALUE" ] || [ -n "$GIT_USER_NAME_VALUE" ]; then
+  if command -v git >/dev/null 2>&1; then
+    [ -n "$GIT_USER_EMAIL_VALUE" ] && git config --file "$STATE_DIR/.gitconfig" user.email "$GIT_USER_EMAIL_VALUE"
+    [ -n "$GIT_USER_NAME_VALUE"  ] && git config --file "$STATE_DIR/.gitconfig" user.name  "$GIT_USER_NAME_VALUE"
+  else
+    warn "git not found on host; skipping git identity setup (GIT_USER_EMAIL / GIT_USER_NAME)."
+  fi
+fi
+
 # ---- TTY handling ---------------------------------------------------------
 # Always forward stdin (-i) so piping works; only allocate a pty (-t) when both
 # ends are real terminals.
@@ -122,9 +332,9 @@ if [ -t 0 ] && [ -t 1 ]; then TTY_FLAGS+=(-t); fi
 
 # ---- port publishing ------------------------------------------------------
 PORT_FLAGS=()
-if [ -n "${PORTS:-}" ]; then
+if [ -n "$PORTS_VALUE" ]; then
   OLDIFS="$IFS"; IFS=','
-  for p in $PORTS; do
+  for p in $PORTS_VALUE; do
     p="${p// /}"
     [ -z "$p" ] && continue
     case "$p" in *[!0-9]*) die "Invalid port: '$p'";; esac
@@ -149,8 +359,8 @@ done
 
 # Forward any extra host variables requested for this project/session.
 # Accept commas or spaces so both `FOO,BAR` and `FOO BAR` work.
-if [ -n "${AGENT_POD_ENV:-}" ]; then
-  for v in ${AGENT_POD_ENV//,/ }; do
+if [ -n "$AGENT_POD_ENV_VALUE" ]; then
+  for v in ${AGENT_POD_ENV_VALUE//,/ }; do
     [ -z "$v" ] && continue
     case "$v" in
       [A-Za-z_]*) ;;
@@ -167,18 +377,6 @@ if [ -n "${AGENT_POD_ENV:-}" ]; then
   done
 fi
 
-# Env-file ergonomics. Docker reads KEY=VALUE lines and comments. Prefer a
-# project-local file, then fall back to a central file next to this launcher.
-ENV_FILE="${AGENT_POD_ENV_FILE:-}"
-if [ -z "$ENV_FILE" ] && [ -f ".agent-pod.env" ]; then
-  ENV_FILE=".agent-pod.env"
-elif [ -z "$ENV_FILE" ] && [ -f "agent-pod.env" ]; then
-  ENV_FILE="agent-pod.env"
-elif [ -z "$ENV_FILE" ] && [ -f "$LAUNCHER_DIR/.agent-pod.env" ]; then
-  ENV_FILE="$LAUNCHER_DIR/.agent-pod.env"
-elif [ -z "$ENV_FILE" ] && [ -f "$LAUNCHER_DIR/agent-pod.env" ]; then
-  ENV_FILE="$LAUNCHER_DIR/agent-pod.env"
-fi
 ENV_FILE_FLAGS=()
 if [ -n "$ENV_FILE" ]; then
   [ -f "$ENV_FILE" ] || die "AGENT_POD_ENV_FILE does not exist: $ENV_FILE"

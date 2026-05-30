@@ -40,7 +40,30 @@ radius to a single directory:
 
 ## Setup
 
-### 1. Clone and build the image
+### 1. Install the npm package
+
+```bash
+npm install -g agent-pod
+```
+
+Then build the local Docker image that contains the supported agent CLIs:
+
+```bash
+agent-pod install-image
+```
+
+Run the setup flow in any project where you want a local AgentPod config:
+
+```bash
+cd /path/to/your/project
+agent-pod setup
+```
+
+`agent-pod setup` creates or updates `.agent-pod.env`, asks whether AgentPod
+should add each agent's default autonomous flag, and opens the file in your
+editor when possible.
+
+### Alternative: clone and build from source
 
 ```bash
 git clone https://github.com/jchaselubitz/agent-pod
@@ -87,9 +110,10 @@ AGENT_POD_NPM_PACKAGES="pnpm typescript" \
 `AGENT_POD_NPM_PACKAGES` installs global npm packages. Both are baked into the
 Docker image, so rebuild after changing them.
 
-### 2. Put the launcher on your PATH
+### Put the source checkout launcher on your PATH
 
-The `agent-pod` launcher lives in the repo, so alias it to its absolute path
+If you installed with npm, this is already done. If you cloned from source, the
+`agent-pod` launcher lives in the repo, so alias it to its absolute path
 (replace the path with wherever you cloned the repo):
 
 ```bash
@@ -106,7 +130,7 @@ Or symlink it into a directory already on your PATH:
 ln -s "$PWD/agent-pod" /usr/local/bin/agent-pod
 ```
 
-### 3. Verify
+### Verify
 
 ```bash
 agent-pod shell          # opens a prompt like:  agent-pod:/...$
@@ -213,10 +237,18 @@ to `0.0.0.0` (not `localhost`) to be reachable from the host.
 | `AGENT_POD_ENV` | _(none)_ | Comma- or space-separated host env var names to forward |
 | `AGENT_POD_ENV_FILE` | project `.agent-pod.env`, project `agent-pod.env`, launcher `.agent-pod.env`, launcher `agent-pod.env` | Docker env-file to load into the container |
 | `AGENT_POD_YOLO` | `1` | Set to `0` to drop the auto-approve flags |
+| `AGENT_POD_CLAUDE_AUTO_FLAGS` | `1` | Set to `0` to omit `--dangerously-skip-permissions` |
+| `AGENT_POD_CODEX_AUTO_FLAGS` | `1` | Set to `0` to omit `--dangerously-bypass-approvals-and-sandbox` |
+| `AGENT_POD_CURSOR_AUTO_FLAGS` | `1` | Set to `0` to omit `--force` |
+| `GIT_USER_EMAIL` | _(none)_ | Git `user.email` written into the container's `~/.gitconfig` |
+| `GIT_USER_NAME` | _(none)_ | Git `user.name` written into the container's `~/.gitconfig` |
 | `AGENT_POD_IMAGE` | `agent-pod` | Image name to build/run |
 | `AGENT_POD_HOME` | `~/.agent-pod` | Where per-agent state is stored |
 | `AGENT_POD_APT_PACKAGES` | _(none)_ | Extra Debian packages to bake into the image at install time |
 | `AGENT_POD_NPM_PACKAGES` | _(none)_ | Extra global npm packages to bake into the image at install time |
+
+`agent-pod setup` writes the per-agent autonomous flag choices into
+`.agent-pod.env`. Shell environment values still win over values from the file.
 
 ## How it works
 
