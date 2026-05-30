@@ -1,0 +1,6 @@
+# Overlord local scratch
+.overlord/tmp/
+.overlord/logs/
+
+# Project-local AgentPod secrets
+.agent-pod.env

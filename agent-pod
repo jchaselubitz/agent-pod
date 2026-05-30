@@ -17,6 +17,8 @@ set -eo pipefail
 IMAGE="${AGENT_POD_IMAGE:-agent-pod}"
 STATE_ROOT="${AGENT_POD_HOME:-$HOME/.agent-pod}"
 CONTAINER_HOME="/home/agent-pod"
+CONTAINER_NPM_PREFIX="$CONTAINER_HOME/.npm-global"
+CONTAINER_PATH="$CONTAINER_NPM_PREFIX/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # ---- pretty output (auto-disabled when stderr is not a TTY) ---------------
 if [ -t 2 ]; then
@@ -51,6 +53,10 @@ Anything after the agent name is passed straight through to the CLI, e.g.
 
 Environment:
   PORTS=3000,8080        Publish container ports on 127.0.0.1 only
+  AGENT_POD_ENV=FOO,BAR  Forward additional host environment variables
+  AGENT_POD_ENV_FILE=path
+                         Load env vars from a Docker env-file
+                         (default: ./.agent-pod.env when present)
   AGENT_POD_YOLO=0       Do not add the auto-approve flags shown above
   AGENT_POD_IMAGE=name   Image to run (default: agent-pod)
   AGENT_POD_HOME=path    State directory (default: ~/.agent-pod)
@@ -93,6 +99,7 @@ docker image inspect "$IMAGE" >/dev/null 2>&1 \
 # ---- per-agent state dir (becomes the container's HOME) --------------------
 STATE_DIR="$STATE_ROOT/$AGENT"
 mkdir -p "$STATE_DIR"
+mkdir -p "$STATE_DIR/.npm-global"
 # Owner-only: this holds auth tokens and conversation transcripts.
 chmod 700 "$STATE_ROOT" "$STATE_DIR" 2>/dev/null || true
 
@@ -129,6 +136,38 @@ for v in \
   [ -n "${!v:-}" ] && ENV_FLAGS+=(-e "$v")
 done
 
+# Forward any extra host variables requested for this project/session.
+# Accept commas or spaces so both `FOO,BAR` and `FOO BAR` work.
+if [ -n "${AGENT_POD_ENV:-}" ]; then
+  for v in ${AGENT_POD_ENV//,/ }; do
+    [ -z "$v" ] && continue
+    case "$v" in
+      [A-Za-z_]*) ;;
+      *) die "Invalid environment variable name in AGENT_POD_ENV: '$v'";;
+    esac
+    case "$v" in
+      *[!A-Za-z0-9_]*) die "Invalid environment variable name in AGENT_POD_ENV: '$v'";;
+    esac
+    if [ -n "${!v+x}" ]; then
+      ENV_FLAGS+=(-e "$v")
+    else
+      warn "Skipping unset environment variable from AGENT_POD_ENV: $v"
+    fi
+  done
+fi
+
+# Project-local env-file ergonomics. Docker reads KEY=VALUE lines and comments;
+# keeping this opt-in avoids implicitly exposing arbitrary .env files.
+ENV_FILE="${AGENT_POD_ENV_FILE:-}"
+if [ -z "$ENV_FILE" ] && [ -f ".agent-pod.env" ]; then
+  ENV_FILE=".agent-pod.env"
+fi
+ENV_FILE_FLAGS=()
+if [ -n "$ENV_FILE" ]; then
+  [ -f "$ENV_FILE" ] || die "AGENT_POD_ENV_FILE does not exist: $ENV_FILE"
+  ENV_FILE_FLAGS+=(--env-file "$ENV_FILE")
+fi
+
 # ---- assemble the command -------------------------------------------------
 CMD=("$BIN")
 [ ${#YOLO[@]} -gt 0 ] && CMD+=("${YOLO[@]}")
@@ -143,6 +182,9 @@ exec docker run --rm \
   -e HOME="$CONTAINER_HOME" \
   -e TERM="${TERM:-xterm-256color}" \
   "${ENV_FLAGS[@]}" \
+  "${ENV_FILE_FLAGS[@]}" \
+  -e NPM_CONFIG_PREFIX="$CONTAINER_NPM_PREFIX" \
+  -e PATH="$CONTAINER_PATH" \
   -v "$STATE_DIR:$CONTAINER_HOME" \
   -v "$PWD:$PWD" \
   -w "$PWD" \

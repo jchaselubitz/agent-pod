@@ -1,0 +1,9 @@
+{
+  "_comment": "This file lets Overlord (https://www.ovld.ai) identify which project this folder belongs to. It is created automatically when the folder is added as a project resource. DO NOT EDIT MANUALLY.",
+  "projects": [
+    {
+      "id": "120aca15-8590-4a7f-b94a-21fc6b947133",
+      "name": "AgentPod"
+    }
+  ]
+}

@@ -15,6 +15,8 @@ CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-latest}"
 CODEX_VERSION="${CODEX_VERSION:-latest}"
 OPENCODE_VERSION="${OPENCODE_VERSION:-latest}"
 OVERLORD_VERSION="${OVERLORD_VERSION:-latest}"
+EXTRA_APT_PACKAGES="${AGENT_POD_APT_PACKAGES:-${EXTRA_APT_PACKAGES:-}}"
+EXTRA_NPM_PACKAGES="${AGENT_POD_NPM_PACKAGES:-${EXTRA_NPM_PACKAGES:-}}"
 
 if [ -t 1 ]; then
   C_INFO=$'\033[34m'; C_OK=$'\033[32m'; C_ERR=$'\033[31m'; C_DIM=$'\033[2m'; C_OFF=$'\033[0m'
@@ -34,6 +36,8 @@ BUILD_ARGS=(
   --build-arg "CODEX_VERSION=$CODEX_VERSION"
   --build-arg "OPENCODE_VERSION=$OPENCODE_VERSION"
   --build-arg "OVERLORD_VERSION=$OVERLORD_VERSION"
+  --build-arg "EXTRA_APT_PACKAGES=$EXTRA_APT_PACKAGES"
+  --build-arg "EXTRA_NPM_PACKAGES=$EXTRA_NPM_PACKAGES"
 )
 
 # Force a fresh npm fetch whenever any CLI tracks "latest".
@@ -47,6 +51,8 @@ info "  codex:       $CODEX_VERSION"
 info "  opencode:    $OPENCODE_VERSION"
 info "  overlord:    $OVERLORD_VERSION"
 info "  cursor:      latest (vendor installer)"
+[ -n "$EXTRA_APT_PACKAGES" ] && info "  extra apt:   $EXTRA_APT_PACKAGES"
+[ -n "$EXTRA_NPM_PACKAGES" ] && info "  extra npm:   $EXTRA_NPM_PACKAGES"
 
 docker build "${BUILD_ARGS[@]}" -t "$IMAGE" "$DIR" \
   || die "Build failed."

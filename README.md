@@ -75,6 +75,18 @@ Pin versions if you like:
 CLAUDE_CODE_VERSION=2.0.0 OPENCODE_VERSION=0.3.0 ./install.sh
 ```
 
+Add project/tooling packages to the image when your agents need them:
+
+```bash
+AGENT_POD_APT_PACKAGES="python3 python3-pip build-essential" \
+AGENT_POD_NPM_PACKAGES="pnpm typescript" \
+./install.sh
+```
+
+`AGENT_POD_APT_PACKAGES` installs Debian packages with `apt-get`.
+`AGENT_POD_NPM_PACKAGES` installs global npm packages. Both are baked into the
+Docker image, so rebuild after changing them.
+
 ### 2. Put the launcher on your PATH
 
 The `agent-pod` launcher lives in the repo, so alias it to its absolute path
@@ -141,6 +153,36 @@ Two options, both persist across runs in `~/.agent-pod/<agent>/`:
    `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CURSOR_API_KEY`, `GEMINI_API_KEY`,
    `OPENROUTER_API_KEY`, `GROQ_API_KEY`, `GITHUB_TOKEN`, and more.
 
+For project-specific secrets or API keys, create `.agent-pod.env` in the
+project root:
+
+```dotenv
+OPENAI_API_KEY=sk-...
+STRIPE_SECRET_KEY=sk_test_...
+```
+
+`agent-pod` automatically passes `.agent-pod.env` to Docker when the file is
+present. It is ignored by git in this repository; add the same ignore rule in
+projects that use it.
+
+This repo includes `.agent-pod.env.example` as a starter:
+
+```bash
+cp .agent-pod.env.example .agent-pod.env
+```
+
+To use a different file:
+
+```bash
+AGENT_POD_ENV_FILE=.env.agent agent-pod codex
+```
+
+To forward extra variables from your current shell without an env-file:
+
+```bash
+AWS_PROFILE=dev AGENT_POD_ENV=AWS_PROFILE,MY_API_URL agent-pod claude
+```
+
 ### Exposing dev-server ports
 
 By default nothing is published. Expose ports with `PORTS`:
@@ -157,9 +199,13 @@ to `0.0.0.0` (not `localhost`) to be reachable from the host.
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `PORTS` | _(none)_ | Comma-separated ports to publish on localhost |
+| `AGENT_POD_ENV` | _(none)_ | Comma- or space-separated host env var names to forward |
+| `AGENT_POD_ENV_FILE` | `./.agent-pod.env` when present | Docker env-file to load into the container |
 | `AGENT_POD_YOLO` | `1` | Set to `0` to drop the auto-approve flags |
 | `AGENT_POD_IMAGE` | `agent-pod` | Image name to build/run |
 | `AGENT_POD_HOME` | `~/.agent-pod` | Where per-agent state is stored |
+| `AGENT_POD_APT_PACKAGES` | _(none)_ | Extra Debian packages to bake into the image at install time |
+| `AGENT_POD_NPM_PACKAGES` | _(none)_ | Extra global npm packages to bake into the image at install time |
 
 ## How it works
 
@@ -173,6 +219,8 @@ The `agent-pod` launcher then runs, roughly:
 docker run --rm -i [-t] \
   --user "$(id -u):$(id -g)" \
   -e HOME=/home/agent-pod \
+  -e NPM_CONFIG_PREFIX=/home/agent-pod/.npm-global \
+  [--env-file .agent-pod.env] \
   -v ~/.agent-pod/<agent>:/home/agent-pod \   # persisted auth + history
   -v "$PWD:$PWD" -w "$PWD" \                   # only the current project
   --cap-drop ALL --security-opt no-new-privileges \
@@ -182,6 +230,10 @@ docker run --rm -i [-t] \
 Each agent gets its own `HOME` (`~/.agent-pod/<agent>`), so whatever paths a
 given CLI uses for config/auth/history (`~/.claude*`, `~/.codex`,
 `~/.config/opencode`, `~/.cursor`, ...) all persist uniformly.
+
+Runtime npm global installs use `~/.agent-pod/<agent>/.npm-global`, which keeps
+agent self-updates writable for the non-root container user and persistent
+across runs.
 
 ## Uninstall
 
