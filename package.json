@@ -1,6 +1,6 @@
 {
   "name": "agent-pod-cli",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Run AI coding-agent CLIs inside a Docker sandbox scoped to the current project.",
   "author": "Jake Chase-Lubitz",
   "bin": {
@@ -19,7 +19,7 @@
     "docker",
     "sandbox"
   ],
-  "license": "UNLICENSED",
+  "license": "MIT",
   "engines": {
     "node": ">=18"
   }

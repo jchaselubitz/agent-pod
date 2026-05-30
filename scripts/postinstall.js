@@ -2,7 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { spawnSync } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 
 const nextSteps = `
 agent-pod installed.
@@ -48,6 +48,38 @@ function openControllingTty() {
   }
 }
 
+function truthyEnv(value) {
+  return /^(1|true|yes)$/i.test(value || "");
+}
+
+// When npm is not running scripts in the foreground, its progress renderer can
+// repeatedly clear the terminal line while setup is asking questions on
+// /dev/tty. Defer the interactive setup until that renderer is gone.
+function shouldDeferSetupUntilAfterNpm() {
+  return Boolean(process.env.npm_lifecycle_event) && !truthyEnv(process.env.npm_config_foreground_scripts);
+}
+
+function findNpmAncestorPid() {
+  let pid = process.ppid;
+  for (let i = 0; i < 5 && pid > 1; i += 1) {
+    const result = spawnSync("ps", ["-o", "ppid=", "-o", "command=", "-p", String(pid)], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const line = (result.stdout || "").trim();
+    if (!line) return null;
+
+    const match = line.match(/^(\d+)\s+(.+)$/);
+    if (!match) return null;
+
+    const parentPid = Number(match[1]);
+    const command = match[2];
+    if (/(^|[ /])npm([ /]|$)|npm-cli\.js/.test(command)) return pid;
+    pid = parentPid;
+  }
+  return null;
+}
+
 function runSetup(stdio) {
   const launcher = path.resolve(__dirname, "..", "agent-pod");
   const result = spawnSync(launcher, ["setup"], { stdio });
@@ -61,6 +93,36 @@ function runSetup(stdio) {
   }
 }
 
+function runSetupAfterNpm(ttyFd) {
+  const launcher = path.resolve(__dirname, "..", "agent-pod");
+  const npmPid = findNpmAncestorPid();
+  const waitScript = `
+npm_pid="$1"
+launcher="$2"
+if [ "$npm_pid" != "0" ]; then
+  while kill -0 "$npm_pid" 2>/dev/null; do
+    sleep 0.1
+  done
+else
+  sleep 1
+fi
+sleep 0.2
+printf '\\n' >&2
+exec "$launcher" setup
+`;
+
+  try {
+    const child = spawn("sh", ["-c", waitScript, "agent-pod-deferred-setup", String(npmPid || 0), launcher], {
+      detached: true,
+      stdio: [ttyFd, ttyFd, ttyFd],
+    });
+    child.unref();
+  } catch (error) {
+    console.error(`Could not launch 'agent-pod setup' automatically: ${error.message}`);
+    printNextSteps();
+  }
+}
+
 function main() {
   if (skipForEnv()) {
     printNextSteps();
@@ -70,7 +132,11 @@ function main() {
   const ttyFd = openControllingTty();
   if (ttyFd !== null) {
     try {
-      runSetup([ttyFd, ttyFd, ttyFd]);
+      if (shouldDeferSetupUntilAfterNpm()) {
+        runSetupAfterNpm(ttyFd);
+      } else {
+        runSetup([ttyFd, ttyFd, ttyFd]);
+      }
     } finally {
       try {
         fs.closeSync(ttyFd);

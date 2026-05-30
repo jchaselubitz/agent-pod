@@ -182,6 +182,13 @@ resolve_overlord_token() {
   dotenv_get OVERLORD_AGENT_TOKEN "$cfg" 2>/dev/null
 }
 
+# Fall back to the saved config file (managed by `agent-pod package-add`) when
+# the custom package lists aren't provided via the environment. This is the
+# "config file" path: edit ~/.agent-pod/.agent-pod.env (or use `package-add`)
+# once and every rebuild picks the packages up — no need to re-export them.
+[ -n "$EXTRA_APT_PACKAGES" ] || EXTRA_APT_PACKAGES="$(dotenv_get AGENT_POD_APT_PACKAGES "$CONFIG_ENV_FILE" 2>/dev/null || true)"
+[ -n "$EXTRA_NPM_PACKAGES" ] || EXTRA_NPM_PACKAGES="$(dotenv_get AGENT_POD_NPM_PACKAGES "$CONFIG_ENV_FILE" 2>/dev/null || true)"
+
 BUILD_ARGS=(
   --build-arg "CLAUDE_CODE_VERSION=$CLAUDE_CODE_VERSION"
   --build-arg "CODEX_VERSION=$CODEX_VERSION"

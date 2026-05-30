@@ -388,6 +388,88 @@ run_agent_remove() {
   info "Rebuild the image to remove disabled CLIs: agent-pod install-image"
 }
 
+package_config_key() {
+  # Map a package type to the env-file key that holds its package list.
+  case "$1" in
+    npm) printf '%s\n' "AGENT_POD_NPM_PACKAGES";;
+    apt) printf '%s\n' "AGENT_POD_APT_PACKAGES";;
+    *) return 1;;
+  esac
+}
+
+valid_package_token() {
+  # Package lists are word-split, unquoted, into `apt-get install` /
+  # `npm install -g` during the image build, so reject anything that isn't a
+  # plausible package spec (no whitespace or shell metacharacters). Allows
+  # scoped npm names and version specs like @scope/pkg@1.2 or pkg~=1.0.
+  case "$1" in
+    ""|*[!A-Za-z0-9@._/+~^=-]*) return 1;;
+    *) return 0;;
+  esac
+}
+
+run_packages_list() {
+  [ $# -eq 0 ] || die "Usage: agent-pod packages"
+  npm_pkgs="$(config_value AGENT_POD_NPM_PACKAGES "")"
+  apt_pkgs="$(config_value AGENT_POD_APT_PACKAGES "")"
+  info "Custom packages baked into the image:"
+  printf '  %-4s %s\n' "npm" "${npm_pkgs:-(none)}"
+  printf '  %-4s %s\n' "apt" "${apt_pkgs:-(none)}"
+  if [ -n "$npm_pkgs$apt_pkgs" ]; then
+    info "Rebuild the image to apply changes: agent-pod install-image"
+  fi
+}
+
+run_package_add() {
+  pkg_type="npm"
+  case "${1:-}" in
+    --npm) shift;;
+    --apt) pkg_type="apt"; shift;;
+    --*) die "Unknown option '$1'. Use --npm (default) or --apt.";;
+  esac
+  [ $# -ge 1 ] || die "Usage: agent-pod package-add [--npm|--apt] <package> [package...]"
+  key="$(package_config_key "$pkg_type")"
+  for pkg in "$@"; do
+    valid_package_token "$pkg" || die "Invalid package name: '$pkg'"
+  done
+  next="$(config_value "$key" "")"
+  for pkg in "$@"; do
+    case " $next " in
+      *" $pkg "*) ;;
+      *) next="${next:+$next }$pkg";;
+    esac
+  done
+  env_file="$(ensure_config_file)"
+  upsert_env_var "$env_file" "$key" "$next"
+  ok "Custom $pkg_type packages: ${next:-(none)}"
+  info "Rebuild the image to install them: agent-pod install-image"
+}
+
+run_package_remove() {
+  pkg_type="npm"
+  case "${1:-}" in
+    --npm) shift;;
+    --apt) pkg_type="apt"; shift;;
+    --*) die "Unknown option '$1'. Use --npm (default) or --apt.";;
+  esac
+  [ $# -ge 1 ] || die "Usage: agent-pod package-remove [--npm|--apt] <package> [package...]"
+  key="$(package_config_key "$pkg_type")"
+  current="$(config_value "$key" "")"
+  next=""
+  for existing in $current; do
+    drop=0
+    for pkg in "$@"; do
+      [ "$existing" = "$pkg" ] && { drop=1; break; }
+    done
+    [ "$drop" -eq 1 ] && continue
+    next="${next:+$next }$existing"
+  done
+  env_file="$(ensure_config_file)"
+  upsert_env_var "$env_file" "$key" "$next"
+  ok "Custom $pkg_type packages: ${next:-(none)}"
+  info "Rebuild the image to apply the change: agent-pod install-image"
+}
+
 run_setup() {
   # Store config with the CLI (~/.agent-pod/.agent-pod.env) by default rather
   # than dropping a file into the current working directory.
@@ -515,6 +597,11 @@ Usage:
   agent-pod agent-add <agent...> Add supported agents
   agent-pod agent-remove <agent...>
                                   Remove supported agents
+  agent-pod packages             Show custom apt/npm packages baked into the image
+  agent-pod package-add [--npm|--apt] <pkg...>
+                                  Add custom packages to bake into the image
+  agent-pod package-remove [--npm|--apt] <pkg...>
+                                  Remove custom packages from the image
   agent-pod edit-env             Open the active env file in your editor
   agent-pod install-image        Build the Docker image used by agent-pod
   agent-pod prune [hours]        Remove stopped AgentPod containers
@@ -543,6 +630,12 @@ Environment:
   AGENT_POD_YOLO=0       Do not add any AgentPod auto-approve flags
   AGENT_POD_AGENTS=claude,codex,opencode,overlord,cursor
                          Supported agent CLIs to build and run
+  AGENT_POD_NPM_PACKAGES="pnpm typescript"
+                         Extra global npm packages baked into the image
+                         (manage with: agent-pod package-add [--npm])
+  AGENT_POD_APT_PACKAGES="python3 build-essential"
+                         Extra Debian packages baked into the image
+                         (manage with: agent-pod package-add --apt)
   AGENT_POD_<AGENT>_AUTO_FLAGS=0
                          Do not add the default flag for one agent
                          (CLAUDE, CODEX, CURSOR)
@@ -580,6 +673,9 @@ case "$1" in
   agents) run_agents_list; exit 0;;
   agent-add|add-agent) shift; run_agent_add "$@"; exit 0;;
   agent-remove|remove-agent) shift; run_agent_remove "$@"; exit 0;;
+  packages) shift; run_packages_list "$@"; exit 0;;
+  package-add|add-package) shift; run_package_add "$@"; exit 0;;
+  package-remove|remove-package) shift; run_package_remove "$@"; exit 0;;
   edit-env) run_edit_env; exit 0;;
   update) run_update; exit 0;;
   prune) shift; run_prune "$@"; exit 0;;

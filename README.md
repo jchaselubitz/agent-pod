@@ -113,17 +113,32 @@ Pin versions if you like:
 CLAUDE_CODE_VERSION=2.0.0 OPENCODE_VERSION=0.3.0 ./install.sh
 ```
 
-Add project/tooling packages to the image when your agents need them:
+Add project/tooling packages to the image when your agents need them. The
+easiest way is to save them to your config file with `package-add`, so they
+persist across rebuilds:
 
 ```bash
-AGENT_POD_APT_PACKAGES="python3 python3-pip build-essential" \
+agent-pod package-add --npm pnpm typescript
+agent-pod package-add --apt python3 python3-pip build-essential
+agent-pod packages            # list what's configured
+agent-pod package-remove --npm typescript
+agent-pod install-image       # rebuild to apply
+```
+
+`--npm` (the default) installs global npm packages; `--apt` installs Debian
+packages with `apt-get`. Both lists are saved in `~/.agent-pod/.agent-pod.env`
+as `AGENT_POD_NPM_PACKAGES` / `AGENT_POD_APT_PACKAGES` — edit that file directly
+if you prefer. They're baked into the Docker image, so rebuild after changing
+them.
+
+You can also set them as one-off environment variables, which override the
+saved config for that build:
+
+```bash
+AGENT_POD_APT_PACKAGES="python3 build-essential" \
 AGENT_POD_NPM_PACKAGES="pnpm typescript" \
 ./install.sh
 ```
-
-`AGENT_POD_APT_PACKAGES` installs Debian packages with `apt-get`.
-`AGENT_POD_NPM_PACKAGES` installs global npm packages. Both are baked into the
-Docker image, so rebuild after changing them.
 
 ### Put the source checkout launcher on your PATH
 
@@ -191,6 +206,16 @@ agent-pod agents
 agent-pod agent-add cursor overlord
 agent-pod agent-remove opencode
 agent-pod install-image      # rebuild after changing supported agents
+```
+
+Manage custom packages baked into the image the same way:
+
+```bash
+agent-pod packages
+agent-pod package-add --npm pnpm typescript
+agent-pod package-add --apt python3 build-essential
+agent-pod package-remove --npm typescript
+agent-pod install-image      # rebuild after changing packages
 ```
 
 Anything after the agent name is forwarded straight to the CLI:
@@ -307,11 +332,12 @@ to `0.0.0.0` (not `localhost`) to be reachable from the host.
 | `AGENT_POD_AUTO_PRUNE` | `1` | Set to `0` to disable periodic stopped-container pruning |
 | `AGENT_POD_PRUNE_INTERVAL_HOURS` | `24` | How often launches try automatic pruning; `0` means every launch |
 | `AGENT_POD_PRUNE_UNTIL_HOURS` | `24` | Auto-prune stopped AgentPod containers older than this; `0` means all stopped AgentPod containers |
-| `AGENT_POD_APT_PACKAGES` | _(none)_ | Extra Debian packages to bake into the image at install time |
-| `AGENT_POD_NPM_PACKAGES` | _(none)_ | Extra global npm packages to bake into the image at install time |
+| `AGENT_POD_APT_PACKAGES` | _(none)_ | Extra Debian packages to bake into the image at install time (manage with `agent-pod package-add --apt`) |
+| `AGENT_POD_NPM_PACKAGES` | _(none)_ | Extra global npm packages to bake into the image at install time (manage with `agent-pod package-add --npm`) |
 
-`agent-pod setup`, `agent-pod agent-add`, and `agent-pod agent-remove` write the
-supported-agent list and per-agent autonomous flag choices into
+`agent-pod setup`, `agent-pod agent-add`/`agent-remove`, and
+`agent-pod package-add`/`package-remove` write the supported-agent list,
+per-agent autonomous flag choices, and custom package lists into
 `~/.agent-pod/.agent-pod.env`. Shell environment values still win over values
 from the file.
 
