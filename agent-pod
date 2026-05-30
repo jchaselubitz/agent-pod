@@ -17,6 +17,7 @@ set -eo pipefail
 CONTAINER_HOME="/home/agent-pod"
 CONTAINER_NPM_PREFIX="$CONTAINER_HOME/.npm-global"
 CONTAINER_PATH="$CONTAINER_NPM_PREFIX/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+MANAGED_LABEL="com.agent-pod.managed=true"
 
 SOURCE="${BASH_SOURCE[0]}"
 while [ -h "$SOURCE" ]; do
@@ -34,7 +35,7 @@ LAUNCHER_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 # run from. AGENT_POD_HOME must be a real environment variable to relocate it,
 # since we need it before any env-file is loaded.
 CONFIG_HOME="${AGENT_POD_HOME:-$HOME/.agent-pod}"
-CONFIG_ENV_FILE="$CONFIG_HOME/agent-pod.env"
+CONFIG_ENV_FILE="$CONFIG_HOME/.agent-pod.env"
 
 # ---- pretty output (auto-disabled when stderr is not a TTY) ---------------
 if [ -t 2 ]; then
@@ -50,7 +51,7 @@ die()  { printf '%s%s%s\n' "$C_ERR"  "$*" "$C_OFF" >&2; exit 1; }
 discover_env_file() {
   # Resolution order, most to least specific:
   #   1. AGENT_POD_ENV_FILE        explicit override
-  #   2. ~/.agent-pod/agent-pod.env  central config that lives with the CLI
+  #   2. ~/.agent-pod/.agent-pod.env  central config that lives with the CLI
   #   3. cwd .agent-pod.env / agent-pod.env   legacy project-local files
   #   4. launcher-dir files                    legacy source-checkout files
   if [ -n "${AGENT_POD_ENV_FILE:-}" ]; then
@@ -113,6 +114,67 @@ truthy() {
   esac
 }
 
+nonnegative_integer() {
+  case "$1" in
+    ""|*[!0-9]*) return 1;;
+    *) return 0;;
+  esac
+}
+
+available_agents() {
+  printf '%s\n' "claude codex opencode overlord cursor"
+}
+
+agent_label() {
+  local agent="$1"
+  case "$agent" in
+    claude) printf '%s\n' "Claude Code";;
+    codex) printf '%s\n' "OpenAI Codex";;
+    opencode) printf '%s\n' "OpenCode";;
+    overlord) printf '%s\n' "Overlord";;
+    cursor) printf '%s\n' "Cursor Agent";;
+    *) printf '%s\n' "$agent";;
+  esac
+}
+
+normalize_agents() {
+  local raw normalized agent
+  raw="$*"
+  [ -n "$raw" ] || return 1
+  normalized=""
+  for agent in $(printf '%s\n' "$raw" | tr '[:upper:],;' '[:lower:]  '); do
+    case "$agent" in
+      all) printf '%s\n' "$(available_agents)"; return 0;;
+      claude|codex|opencode|overlord|cursor) ;;
+      *) return 1;;
+    esac
+    case " $normalized " in
+      *" $agent "*) ;;
+      *) normalized="${normalized:+$normalized }$agent";;
+    esac
+  done
+  [ -n "$normalized" ] || return 1
+  printf '%s\n' "$normalized"
+}
+
+agents_csv() {
+  printf '%s\n' "$*" | tr ' ' ','
+}
+
+agent_in_list() {
+  local needle agent
+  needle="$1"; shift
+  for agent in "$@"; do
+    [ "$agent" = "$needle" ] && return 0
+  done
+  return 1
+}
+
+supported_agents() {
+  normalize_agents "$(config_value AGENT_POD_AGENTS "$(available_agents)")" \
+    || die "Invalid AGENT_POD_AGENTS value. Choose from: $(available_agents)"
+}
+
 upsert_env_var() {
   file="$1"
   key="$2"
@@ -162,6 +224,22 @@ prompt_text() {
   printf '%s\n' "$reply"
 }
 
+prompt_agent_selection() {
+  [ -t 0 ] || { available_agents; return 0; }
+  if prompt_yes_no "Support all available agents? ($(available_agents))" "yes"; then
+    available_agents
+    return 0
+  fi
+  while true; do
+    reply="$(prompt_text "Agents to support (space/comma separated: $(available_agents)):" || true)"
+    if normalized="$(normalize_agents "$reply" 2>/dev/null)"; then
+      printf '%s\n' "$normalized"
+      return 0
+    fi
+    warn "Choose one or more agents from: $(available_agents)"
+  done
+}
+
 open_in_editor() {
   file="$1"
   if [ -n "${VISUAL:-}" ]; then
@@ -208,8 +286,110 @@ run_edit_env() {
   fi
 }
 
+run_prune() {
+  [ $# -le 1 ] || die "Usage: agent-pod prune [hours]"
+  until_hours="${1:-$(config_value AGENT_POD_PRUNE_UNTIL_HOURS 24)}"
+  nonnegative_integer "$until_hours" \
+    || die "Invalid prune age '$until_hours'. Use whole hours, or 0 for all stopped AgentPod containers."
+
+  command -v docker >/dev/null 2>&1 || die "Docker is not installed or not on PATH."
+  docker info >/dev/null 2>&1       || die "Docker daemon is not running. Start Docker and retry."
+
+  PRUNE_FILTERS=(--filter "label=$MANAGED_LABEL")
+  if [ "$until_hours" -gt 0 ]; then
+    PRUNE_FILTERS+=(--filter "until=${until_hours}h")
+  fi
+
+  if [ "$until_hours" -eq 0 ]; then
+    info "Pruning all stopped AgentPod containers..."
+  else
+    info "Pruning stopped AgentPod containers older than ${until_hours}h..."
+  fi
+  docker container prune --force "${PRUNE_FILTERS[@]}"
+}
+
+auto_prune_if_due() {
+  truthy "$(config_value AGENT_POD_AUTO_PRUNE 1)" || return 0
+
+  interval_hours="$(config_value AGENT_POD_PRUNE_INTERVAL_HOURS 24)"
+  nonnegative_integer "$interval_hours" \
+    || { warn "Invalid AGENT_POD_PRUNE_INTERVAL_HOURS='$interval_hours'; skipping auto-prune."; return 0; }
+
+  marker="$STATE_ROOT/.last-container-prune"
+  if [ -f "$marker" ] && [ "$interval_hours" -gt 0 ]; then
+    interval_minutes=$((interval_hours * 60))
+    if ! find "$marker" -mmin "+$interval_minutes" -print -quit 2>/dev/null | grep -q .; then
+      return 0
+    fi
+  fi
+
+  mkdir -p "$STATE_ROOT" 2>/dev/null || true
+  if run_prune "$(config_value AGENT_POD_PRUNE_UNTIL_HOURS 24)" >/dev/null 2>&1; then
+    touch "$marker" 2>/dev/null || true
+  else
+    warn "Automatic AgentPod container prune failed; continuing launch."
+  fi
+}
+
+ensure_config_file() {
+  target="${AGENT_POD_ENV_FILE:-$CONFIG_ENV_FILE}"
+  mkdir -p "$(dirname "$target")" 2>/dev/null || true
+  if [ ! -f "$target" ]; then
+    : > "$target"
+    chmod 600 "$target" 2>/dev/null || true
+    ok "Created $target"
+  fi
+  printf '%s\n' "$target"
+}
+
+run_agents_list() {
+  enabled="$(supported_agents)"
+  info "Supported agents:"
+  for agent in $(available_agents); do
+    if agent_in_list "$agent" $enabled; then
+      printf '  %-9s %s\n' "$agent" "$(agent_label "$agent")"
+    fi
+  done
+}
+
+run_agent_add() {
+  [ $# -ge 1 ] || die "Usage: agent-pod agent-add <agent> [agent...]"
+  add_agents="$(normalize_agents "$*" 2>/dev/null)" \
+    || die "Unknown agent. Choose from: $(available_agents)"
+  current_agents="$(supported_agents)"
+  next_agents="$current_agents"
+  for agent in $add_agents; do
+    if ! agent_in_list "$agent" $next_agents; then
+      next_agents="${next_agents:+$next_agents }$agent"
+    fi
+  done
+  env_file="$(ensure_config_file)"
+  upsert_env_var "$env_file" AGENT_POD_AGENTS "$(agents_csv "$next_agents")"
+  ok "Supported agents: $next_agents"
+  info "Rebuild the image to install newly enabled CLIs: agent-pod install-image"
+}
+
+run_agent_remove() {
+  [ $# -ge 1 ] || die "Usage: agent-pod agent-remove <agent> [agent...]"
+  remove_agents="$(normalize_agents "$*" 2>/dev/null)" \
+    || die "Unknown agent. Choose from: $(available_agents)"
+  current_agents="$(supported_agents)"
+  next_agents=""
+  for agent in $current_agents; do
+    if agent_in_list "$agent" $remove_agents; then
+      continue
+    fi
+    next_agents="${next_agents:+$next_agents }$agent"
+  done
+  [ -n "$next_agents" ] || die "At least one agent must remain supported."
+  env_file="$(ensure_config_file)"
+  upsert_env_var "$env_file" AGENT_POD_AGENTS "$(agents_csv "$next_agents")"
+  ok "Supported agents: $next_agents"
+  info "Rebuild the image to remove disabled CLIs: agent-pod install-image"
+}
+
 run_setup() {
-  # Store config with the CLI (~/.agent-pod/agent-pod.env) by default rather
+  # Store config with the CLI (~/.agent-pod/.agent-pod.env) by default rather
   # than dropping a file into the current working directory.
   env_file="${AGENT_POD_ENV_FILE:-$CONFIG_ENV_FILE}"
   mkdir -p "$(dirname "$env_file")" 2>/dev/null || true
@@ -233,28 +413,37 @@ run_setup() {
 EOF
   fi
 
-  if prompt_yes_no "Use Claude Code autonomous flag (--dangerously-skip-permissions)?" "yes"; then
-    upsert_env_var "$env_file" AGENT_POD_CLAUDE_AUTO_FLAGS 1
-  else
-    upsert_env_var "$env_file" AGENT_POD_CLAUDE_AUTO_FLAGS 0
+  chosen_agents="$(prompt_agent_selection)"
+  upsert_env_var "$env_file" AGENT_POD_AGENTS "$(agents_csv "$chosen_agents")"
+
+  if agent_in_list claude $chosen_agents; then
+    if prompt_yes_no "Use Claude Code autonomous flag (--dangerously-skip-permissions)?" "yes"; then
+      upsert_env_var "$env_file" AGENT_POD_CLAUDE_AUTO_FLAGS 1
+    else
+      upsert_env_var "$env_file" AGENT_POD_CLAUDE_AUTO_FLAGS 0
+    fi
   fi
 
-  if prompt_yes_no "Use OpenAI Codex autonomous flag (--dangerously-bypass-approvals-and-sandbox)?" "yes"; then
-    upsert_env_var "$env_file" AGENT_POD_CODEX_AUTO_FLAGS 1
-  else
-    upsert_env_var "$env_file" AGENT_POD_CODEX_AUTO_FLAGS 0
+  if agent_in_list codex $chosen_agents; then
+    if prompt_yes_no "Use OpenAI Codex autonomous flag (--dangerously-bypass-approvals-and-sandbox)?" "yes"; then
+      upsert_env_var "$env_file" AGENT_POD_CODEX_AUTO_FLAGS 1
+    else
+      upsert_env_var "$env_file" AGENT_POD_CODEX_AUTO_FLAGS 0
+    fi
   fi
 
   upsert_env_var "$env_file" AGENT_POD_OPENCODE_AUTO_FLAGS 0
   upsert_env_var "$env_file" AGENT_POD_OVERLORD_AUTO_FLAGS 0
 
-  if prompt_yes_no "Use Cursor Agent autonomous flag (--force)?" "yes"; then
-    upsert_env_var "$env_file" AGENT_POD_CURSOR_AUTO_FLAGS 1
-  else
-    upsert_env_var "$env_file" AGENT_POD_CURSOR_AUTO_FLAGS 0
+  if agent_in_list cursor $chosen_agents; then
+    if prompt_yes_no "Use Cursor Agent autonomous flag (--force)?" "yes"; then
+      upsert_env_var "$env_file" AGENT_POD_CURSOR_AUTO_FLAGS 1
+    else
+      upsert_env_var "$env_file" AGENT_POD_CURSOR_AUTO_FLAGS 0
+    fi
   fi
 
-  if prompt_yes_no "Do you use Overlord to manage agents?" "yes"; then
+  if agent_in_list overlord $chosen_agents && prompt_yes_no "Do you use Overlord to manage agents?" "yes"; then
     current_overlord_token="$(dotenv_get OVERLORD_AGENT_TOKEN "$env_file" 2>/dev/null || true)"
     if [ -n "$current_overlord_token" ]; then
       token_prompt="Overlord agent token [leave blank to keep existing]:"
@@ -267,7 +456,7 @@ EOF
     elif [ -z "$current_overlord_token" ]; then
       upsert_env_var "$env_file" OVERLORD_AGENT_TOKEN ""
     fi
-  else
+  elif agent_in_list overlord $chosen_agents; then
     info "You should: https://www.ovld.ai"
   fi
 
@@ -321,9 +510,14 @@ agent-pod — sandboxed AI coding agents in Docker
 Usage:
   agent-pod <agent> [args...]    Run an agent in the current directory
   agent-pod shell                Open a shell inside the sandbox
-  agent-pod setup                Create/edit ~/.agent-pod/agent-pod.env
+  agent-pod setup                Create/edit ~/.agent-pod/.agent-pod.env
+  agent-pod agents               Show enabled agents
+  agent-pod agent-add <agent...> Add supported agents
+  agent-pod agent-remove <agent...>
+                                  Remove supported agents
   agent-pod edit-env             Open the active env file in your editor
   agent-pod install-image        Build the Docker image used by agent-pod
+  agent-pod prune [hours]        Remove stopped AgentPod containers
   agent-pod update               Update agent-pod-cli to the latest version
   agent-pod uninstall            Remove the Docker image and ~/.agent-pod state
   agent-pod --help
@@ -332,10 +526,8 @@ Agents:
   claude     Claude Code      (claude; optional --dangerously-skip-permissions)
   codex      OpenAI Codex     (codex; optional --dangerously-bypass-approvals-and-sandbox)
   opencode   OpenCode         (opencode)
+  overlord   Overlord         (ovld)
   cursor     Cursor Agent     (cursor-agent; optional --force)
-
-Agent managers:
-  ovld   Overlord         (ovld)
 
 Anything after the agent name is passed straight through to the CLI, e.g.
   agent-pod claude -p "summarize this repo"
@@ -346,14 +538,21 @@ Environment:
   AGENT_POD_ENV=FOO,BAR  Forward additional host environment variables
   AGENT_POD_ENV_FILE=path
                          Load env vars from a Docker env-file
-                         (default: ~/.agent-pod/agent-pod.env, then any
+                         (default: ~/.agent-pod/.agent-pod.env, then any
                           legacy project/launcher env file)
   AGENT_POD_YOLO=0       Do not add any AgentPod auto-approve flags
+  AGENT_POD_AGENTS=claude,codex,opencode,overlord,cursor
+                         Supported agent CLIs to build and run
   AGENT_POD_<AGENT>_AUTO_FLAGS=0
                          Do not add the default flag for one agent
                          (CLAUDE, CODEX, CURSOR)
   AGENT_POD_IMAGE=name   Image to run (default: agent-pod)
   AGENT_POD_HOME=path    State directory (default: ~/.agent-pod)
+  AGENT_POD_AUTO_PRUNE=0 Disable periodic stopped-container pruning
+  AGENT_POD_PRUNE_INTERVAL_HOURS=24
+                         How often launches try automatic pruning
+  AGENT_POD_PRUNE_UNTIL_HOURS=24
+                         Auto-prune stopped AgentPod containers older than this
 
 Auth: log in interactively once (it persists), or export a provider key
 (ANTHROPIC_API_KEY, OPENAI_API_KEY, CURSOR_API_KEY, ...) and it is forwarded
@@ -378,8 +577,12 @@ AGENT_POD_ENV_VALUE="$(config_value AGENT_POD_ENV "${AGENT_POD_ENV:-}")"
 case "$1" in -h|--help|help) usage; exit 0;; esac
 case "$1" in
   setup) run_setup; exit 0;;
+  agents) run_agents_list; exit 0;;
+  agent-add|add-agent) shift; run_agent_add "$@"; exit 0;;
+  agent-remove|remove-agent) shift; run_agent_remove "$@"; exit 0;;
   edit-env) run_edit_env; exit 0;;
   update) run_update; exit 0;;
+  prune) shift; run_prune "$@"; exit 0;;
   install-image)
     exec "$LAUNCHER_DIR/install.sh"
     ;;
@@ -396,10 +599,17 @@ case "$AGENT" in
   claude)   BIN="claude";       YOLO=(--dangerously-skip-permissions);;
   codex)    BIN="codex";        YOLO=(--dangerously-bypass-approvals-and-sandbox);;
   opencode) BIN="opencode";     YOLO=();;
+  overlord) BIN="ovld";         YOLO=();;
   cursor)   BIN="cursor-agent"; YOLO=(--force);;
   shell)    BIN="bash";         YOLO=();;
-  *) die "Unknown agent '$AGENT'. Choose: claude, codex, opencode, cursor, shell";;
+  *) die "Unknown agent '$AGENT'. Choose: $(available_agents), shell";;
 esac
+
+if [ "$AGENT" != "shell" ]; then
+  ENABLED_AGENTS="$(supported_agents)"
+  agent_in_list "$AGENT" $ENABLED_AGENTS \
+    || die "$(agent_label "$AGENT") is not enabled. Add it with: agent-pod agent-add $AGENT && agent-pod install-image"
+fi
 
 [ "$(config_value AGENT_POD_YOLO 1)" = "0" ] && YOLO=()
 case "$AGENT" in
@@ -411,6 +621,7 @@ esac
 # ---- preflight ------------------------------------------------------------
 command -v docker >/dev/null 2>&1 || die "Docker is not installed or not on PATH."
 docker info >/dev/null 2>&1       || die "Docker daemon is not running. Start Docker and retry."
+auto_prune_if_due
 docker image inspect "$IMAGE" >/dev/null 2>&1 \
   || die "Image '$IMAGE' not found. Build it first:  ./install.sh"
 
@@ -502,6 +713,8 @@ info "  state: $STATE_DIR"
 
 exec docker run --rm \
   "${TTY_FLAGS[@]}" \
+  --label "$MANAGED_LABEL" \
+  --label "com.agent-pod.agent=$AGENT" \
   --user "$(id -u):$(id -g)" \
   -e HOME="$CONTAINER_HOME" \
   -e TERM="${TERM:-xterm-256color}" \

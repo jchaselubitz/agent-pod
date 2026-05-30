@@ -54,23 +54,24 @@ two commands below yourself. Set `AGENT_POD_SKIP_SETUP=1` before installing to
 always skip the auto-launch.
 
 ```bash
-agent-pod setup          # create ~/.agent-pod/agent-pod.env (auto-runs on install)
+agent-pod setup          # create ~/.agent-pod/.agent-pod.env (auto-runs on install)
 agent-pod install-image  # build the Docker image with the agent CLIs
 ```
 
-If `OVERLORD_AGENT_TOKEN` is set in your environment or `~/.agent-pod/agent-pod.env`,
+If `OVERLORD_AGENT_TOKEN` is set in your environment or `~/.agent-pod/.agent-pod.env`,
 `agent-pod install-image` also runs `ovld setup all` once for each agent's state
 directory after the build. That installs the Overlord connectors and pre-approves
 the `ovld protocol` commands the agents run (the permission prompt is auto-accepted
 because the setup runs non-interactively), so agents launched via AgentPod can drive
 Overlord tickets without stopping for permission prompts.
 
-`agent-pod setup` creates or updates `~/.agent-pod/agent-pod.env` — a single
+`agent-pod setup` creates or updates `~/.agent-pod/.agent-pod.env` — a single
 config file that lives with the CLI, not in whatever directory you run from —
-asks whether AgentPod should add each agent's default autonomous flag, prompts
-for an Overlord agent token when you use Overlord to manage agents, opens the
-file in your editor when possible, and finally offers to build the Docker image
-now so it's ready the first time you launch an agent.
+asks which agent CLIs AgentPod should support, asks whether AgentPod should add
+each selected agent's default autonomous flag, prompts for an Overlord agent
+token when you use Overlord to manage agents, opens the file in your editor
+when possible, and finally offers to build the Docker image now so it's ready
+the first time you launch an agent.
 
 > Make sure you install with `-g`. Without it, `npm install agent-pod-cli`
 > drops the package into the current project's `node_modules` instead of your
@@ -84,8 +85,9 @@ cd agent-pod
 ./install.sh
 ```
 
-`install.sh` builds the `agent-pod` image with all five CLIs and then prints
-the installed version of each. A successful build ends with:
+`install.sh` asks which agents to support when no `AGENT_POD_AGENTS` setting is
+already configured, builds the `agent-pod` image with those CLIs, and then
+prints the installed version of each selected CLI. A successful build ends with:
 
 ```
 Image 'agent-pod' built.
@@ -182,12 +184,45 @@ agent-pod cursor            # Cursor Agent
 agent-pod shell             # a plain shell inside the sandbox
 ```
 
+Manage supported agents later with:
+
+```bash
+agent-pod agents
+agent-pod agent-add cursor overlord
+agent-pod agent-remove opencode
+agent-pod install-image      # rebuild after changing supported agents
+```
+
 Anything after the agent name is forwarded straight to the CLI:
 
 ```bash
 agent-pod claude -p "explain the build setup"
 agent-pod codex exec "run the tests and fix failures"
 ```
+
+### Pod lifecycle and pruning
+
+Each `agent-pod <agent>` run creates one Docker container for that session.
+When the agent process exits, Docker removes the container automatically because
+the launcher uses `docker run --rm`. New containers are labeled as AgentPod
+containers so they can be cleaned up safely if Docker ever leaves a stopped
+container behind after an interrupted or abnormal shutdown.
+
+AgentPod intentionally does not prune per-agent state. Auth, history, local CLI
+self-updates, and tool config live under `~/.agent-pod/<agent>/` and persist
+across runs until you remove them or run `agent-pod uninstall`.
+
+To remove stopped AgentPod containers manually:
+
+```bash
+agent-pod prune       # stopped AgentPod containers older than 24 hours
+agent-pod prune 0     # all stopped AgentPod containers
+agent-pod prune 168   # stopped AgentPod containers older than 7 days
+```
+
+Launches also try this stopped-container prune automatically once every 24
+hours. Disable or tune that behavior with `AGENT_POD_AUTO_PRUNE`,
+`AGENT_POD_PRUNE_INTERVAL_HOURS`, and `AGENT_POD_PRUNE_UNTIL_HOURS`.
 
 ### Authentication
 
@@ -204,7 +239,7 @@ For secrets or API keys you want every pod to receive, put them in the central
 config file that `agent-pod setup` manages:
 
 ```dotenv
-# ~/.agent-pod/agent-pod.env
+# ~/.agent-pod/.agent-pod.env
 OPENAI_API_KEY=sk-...
 STRIPE_SECRET_KEY=sk_test_...
 ```
@@ -212,7 +247,7 @@ STRIPE_SECRET_KEY=sk_test_...
 `agent-pod` resolves the env-file in this order, using the first that exists:
 
 1. `AGENT_POD_ENV_FILE`, if set — an explicit override.
-2. `~/.agent-pod/agent-pod.env` — the central config that lives with the CLI.
+2. `~/.agent-pod/.agent-pod.env` — the central config that lives with the CLI.
 3. `.agent-pod.env`, then `agent-pod.env`, in the current project directory —
    legacy project-local files, still honored if present.
 4. `.agent-pod.env`, then `agent-pod.env`, next to the launcher — legacy
@@ -259,8 +294,9 @@ to `0.0.0.0` (not `localhost`) to be reachable from the host.
 |----------|---------|---------|
 | `PORTS` | _(none)_ | Comma-separated ports to publish on localhost |
 | `AGENT_POD_ENV` | _(none)_ | Comma- or space-separated host env var names to forward |
-| `AGENT_POD_ENV_FILE` | `~/.agent-pod/agent-pod.env`, then legacy project/launcher files | Docker env-file to load into the container |
+| `AGENT_POD_ENV_FILE` | `~/.agent-pod/.agent-pod.env`, then legacy project/launcher files | Docker env-file to load into the container |
 | `AGENT_POD_YOLO` | `1` | Set to `0` to drop the auto-approve flags |
+| `AGENT_POD_AGENTS` | `claude,codex,opencode,overlord,cursor` | Comma- or space-separated agent CLIs to build and run |
 | `AGENT_POD_CLAUDE_AUTO_FLAGS` | `1` | Set to `0` to omit `--dangerously-skip-permissions` |
 | `AGENT_POD_CODEX_AUTO_FLAGS` | `1` | Set to `0` to omit `--dangerously-bypass-approvals-and-sandbox` |
 | `AGENT_POD_CURSOR_AUTO_FLAGS` | `1` | Set to `0` to omit `--force` |
@@ -268,11 +304,15 @@ to `0.0.0.0` (not `localhost`) to be reachable from the host.
 | `GIT_USER_NAME` | _(none)_ | Git `user.name` written into the container's `~/.gitconfig` |
 | `AGENT_POD_IMAGE` | `agent-pod` | Image name to build/run |
 | `AGENT_POD_HOME` | `~/.agent-pod` | Where per-agent state is stored |
+| `AGENT_POD_AUTO_PRUNE` | `1` | Set to `0` to disable periodic stopped-container pruning |
+| `AGENT_POD_PRUNE_INTERVAL_HOURS` | `24` | How often launches try automatic pruning; `0` means every launch |
+| `AGENT_POD_PRUNE_UNTIL_HOURS` | `24` | Auto-prune stopped AgentPod containers older than this; `0` means all stopped AgentPod containers |
 | `AGENT_POD_APT_PACKAGES` | _(none)_ | Extra Debian packages to bake into the image at install time |
 | `AGENT_POD_NPM_PACKAGES` | _(none)_ | Extra global npm packages to bake into the image at install time |
 
-`agent-pod setup` writes the per-agent autonomous flag choices into
-`~/.agent-pod/agent-pod.env`. Shell environment values still win over values
+`agent-pod setup`, `agent-pod agent-add`, and `agent-pod agent-remove` write the
+supported-agent list and per-agent autonomous flag choices into
+`~/.agent-pod/.agent-pod.env`. Shell environment values still win over values
 from the file.
 
 ## How it works
@@ -285,10 +325,11 @@ The `agent-pod` launcher then runs, roughly:
 
 ```bash
 docker run --rm -i [-t] \
+  --label com.agent-pod.managed=true \
   --user "$(id -u):$(id -g)" \
   -e HOME=/home/agent-pod \
   -e NPM_CONFIG_PREFIX=/home/agent-pod/.npm-global \
-  [--env-file ~/.agent-pod/agent-pod.env] \
+  [--env-file ~/.agent-pod/.agent-pod.env] \
   -v ~/.agent-pod/<agent>:/home/agent-pod \   # persisted auth + history
   -v "$PWD:$PWD" -w "$PWD" \                   # only the current project
   --cap-drop ALL --security-opt no-new-privileges \

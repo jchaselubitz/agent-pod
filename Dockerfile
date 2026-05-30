@@ -1,4 +1,4 @@
-# AgentPod — a single image that ships the five supported agent CLIs.
+# AgentPod — a single image that ships the selected supported agent CLIs.
 #
 # We deliberately do NOT bake in a user with `USER`. The launcher passes
 # `--user "$(id -u):$(id -g)"` at runtime so files created inside the container
@@ -16,6 +16,11 @@ ARG OPENCODE_VERSION=latest
 ARG OVERLORD_VERSION=latest
 ARG EXTRA_APT_PACKAGES=""
 ARG EXTRA_NPM_PACKAGES=""
+ARG INSTALL_CLAUDE=1
+ARG INSTALL_CODEX=1
+ARG INSTALL_OPENCODE=1
+ARG INSTALL_OVERLORD=1
+ARG INSTALL_CURSOR=1
 
 # Baseline dev tooling. git/curl/less are table stakes; jq + gh are reached for
 # by the agents' built-in workflows (JSON pipelines, GitHub PRs/issues).
@@ -36,10 +41,18 @@ ARG CACHEBUST=1
 # Installed in separate layers so a single failing package is easy to spot in
 # the build log (and doesn't invalidate the others' cache). --no-audit/--no-fund
 # keep output focused on real errors.
-RUN npm install -g --no-audit --no-fund "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
-RUN npm install -g --no-audit --no-fund "@openai/codex@${CODEX_VERSION}"
-RUN npm install -g --no-audit --no-fund "opencode-ai@${OPENCODE_VERSION}"
-RUN npm install -g --no-audit --no-fund "overlord-cli@${OVERLORD_VERSION}"
+RUN if [ "$INSTALL_CLAUDE" = "1" ]; then \
+      npm install -g --no-audit --no-fund "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"; \
+    fi
+RUN if [ "$INSTALL_CODEX" = "1" ]; then \
+      npm install -g --no-audit --no-fund "@openai/codex@${CODEX_VERSION}"; \
+    fi
+RUN if [ "$INSTALL_OPENCODE" = "1" ]; then \
+      npm install -g --no-audit --no-fund "opencode-ai@${OPENCODE_VERSION}"; \
+    fi
+RUN if [ "$INSTALL_OVERLORD" = "1" ]; then \
+      npm install -g --no-audit --no-fund "overlord-cli@${OVERLORD_VERSION}"; \
+    fi
 RUN if [ -n "$EXTRA_NPM_PACKAGES" ]; then \
       npm install -g --no-audit --no-fund $EXTRA_NPM_PACKAGES; \
     fi
@@ -48,12 +61,14 @@ RUN npm cache clean --force
 # Cursor Agent ships its own installer/runtime rather than an npm package.
 # Install it as root, relocate the runtime to /opt, and expose a global symlink
 # so it works for the dynamic runtime user (whose HOME is bind-mounted).
-RUN curl https://cursor.com/install -fsS | bash \
- && mv /root/.local/share/cursor-agent /opt/cursor-agent \
- && ln -sf "$(find /opt/cursor-agent -type f -name cursor-agent | head -n1)" \
-      /usr/local/bin/cursor-agent \
- && chmod -R a+rX /opt/cursor-agent \
- && rm -rf /root/.local /root/.cursor
+RUN if [ "$INSTALL_CURSOR" = "1" ]; then \
+      curl https://cursor.com/install -fsS | bash \
+      && mv /root/.local/share/cursor-agent /opt/cursor-agent \
+      && ln -sf "$(find /opt/cursor-agent -type f -name cursor-agent | head -n1)" \
+          /usr/local/bin/cursor-agent \
+      && chmod -R a+rX /opt/cursor-agent \
+      && rm -rf /root/.local /root/.cursor; \
+    fi
 
 # Home for the dynamic, nameless runtime user. The launcher bind-mounts a
 # per-agent host directory over this path to persist auth/history.

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
 
@@ -19,24 +20,37 @@ function printNextSteps() {
 
 // Auto-launch the setup flow right after install so a fresh user is guided
 // straight into configuring AgentPod (and, at the end of setup, offered the
-// chance to build the Docker image). We only do this when we have a real
-// terminal to talk to — installs in CI, Docker builds, or any non-interactive
-// pipeline fall back to printing the manual next steps so nothing is created
-// or prompted behind the user's back.
-function shouldRunSetup() {
-  if (process.env.AGENT_POD_SKIP_SETUP) return false;
-  if (process.env.CI) return false;
-  // setup needs stdin to prompt and stdout to render. npm normally pipes
-  // lifecycle-script output, so this is only true when the user installed with
-  // output attached to the terminal (e.g. `npm i -g agent-pod-cli
-  // --foreground-scripts`, or a plain interactive install on npm versions that
-  // inherit the tty).
-  return Boolean(process.stdin.isTTY && process.stdout.isTTY);
+// chance to build the Docker image). Installs in CI, Docker builds, or any
+// non-interactive pipeline fall back to printing the manual next steps so
+// nothing is created or prompted behind the user's back.
+function skipForEnv() {
+  if (process.env.AGENT_POD_SKIP_SETUP) return true;
+  if (process.env.CI) return true;
+  return false;
 }
 
-function runSetup() {
+// npm pipes a lifecycle script's stdio (stdout/stderr are captured), so the
+// inherited process.std{in,out} are almost never TTYs during `npm install -g`
+// — which is why keying off process.stdin.isTTY meant setup effectively never
+// auto-launched. The process still keeps its *controlling terminal*, though,
+// so we can open /dev/tty directly and run setup against that. We open it
+// read/write once and reuse the same fd for stdin/stdout/stderr so prompts
+// render and read keystrokes even when npm has redirected the standard fds.
+//
+// Returns an open fd for /dev/tty, or null when there is no controlling
+// terminal (CI, Docker build, piped install) or the platform has no /dev/tty
+// (Windows). Callers must close the fd.
+function openControllingTty() {
+  try {
+    return fs.openSync("/dev/tty", "r+");
+  } catch {
+    return null;
+  }
+}
+
+function runSetup(stdio) {
   const launcher = path.resolve(__dirname, "..", "agent-pod");
-  const result = spawnSync(launcher, ["setup"], { stdio: "inherit" });
+  const result = spawnSync(launcher, ["setup"], { stdio });
   // If we couldn't actually run the launcher (missing bash, perms, etc.),
   // fall back to the manual instructions instead of failing the install.
   if (result.error || result.status !== 0) {
@@ -47,8 +61,34 @@ function runSetup() {
   }
 }
 
-if (shouldRunSetup()) {
-  runSetup();
-} else {
-  printNextSteps();
+function main() {
+  if (skipForEnv()) {
+    printNextSteps();
+    return;
+  }
+
+  const ttyFd = openControllingTty();
+  if (ttyFd !== null) {
+    try {
+      runSetup([ttyFd, ttyFd, ttyFd]);
+    } finally {
+      try {
+        fs.closeSync(ttyFd);
+      } catch {
+        /* ignore */
+      }
+    }
+    return;
+  }
+
+  // No controlling terminal to open. As a last resort, honor an inherited tty
+  // (e.g. `npm i -g --foreground-scripts` on npm versions that pass it
+  // through); otherwise just print the manual next steps.
+  if (process.stdin.isTTY && process.stdout.isTTY) {
+    runSetup("inherit");
+  } else {
+    printNextSteps();
+  }
 }
+
+main();
