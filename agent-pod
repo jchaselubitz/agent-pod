@@ -181,6 +181,16 @@ open_in_editor() {
   fi
 }
 
+run_update() {
+  info "Updating agent-pod-cli to the latest version..."
+  if command -v npm >/dev/null 2>&1; then
+    npm install -g agent-pod-cli@latest
+    ok "agent-pod updated successfully."
+  else
+    die "npm is not installed or not on PATH. Install Node.js/npm and retry."
+  fi
+}
+
 run_edit_env() {
   # Open the active env file in the user's editor. Creates the file (and its
   # parent directory) if it doesn't exist yet.
@@ -314,6 +324,7 @@ Usage:
   agent-pod setup                Create/edit ~/.agent-pod/agent-pod.env
   agent-pod edit-env             Open the active env file in your editor
   agent-pod install-image        Build the Docker image used by agent-pod
+  agent-pod update               Update agent-pod-cli to the latest version
   agent-pod uninstall            Remove the Docker image and ~/.agent-pod state
   agent-pod --help
 
@@ -368,6 +379,7 @@ case "$1" in -h|--help|help) usage; exit 0;; esac
 case "$1" in
   setup) run_setup; exit 0;;
   edit-env) run_edit_env; exit 0;;
+  update) run_update; exit 0;;
   install-image)
     exec "$LAUNCHER_DIR/install.sh"
     ;;
