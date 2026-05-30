@@ -153,28 +153,39 @@ Two options, both persist across runs in `~/.agent-pod/<agent>/`:
    `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CURSOR_API_KEY`, `GEMINI_API_KEY`,
    `OPENROUTER_API_KEY`, `GROQ_API_KEY`, `GITHUB_TOKEN`, and more.
 
-For project-specific secrets or API keys, create `.agent-pod.env` in the
-project root:
+For secrets or API keys you want every pod to receive, create `.agent-pod.env`
+next to the `agent-pod` launcher:
+
+```bash
+cd /path/to/agent-pod
+cp .agent-pod.env.example .agent-pod.env
+```
+
+For project-specific secrets, create `.agent-pod.env` in the project root you
+run `agent-pod` from:
 
 ```dotenv
 OPENAI_API_KEY=sk-...
 STRIPE_SECRET_KEY=sk_test_...
 ```
 
-`agent-pod` automatically passes `.agent-pod.env` to Docker when the file is
-present. It is ignored by git in this repository; add the same ignore rule in
-projects that use it.
-
-This repo includes `.agent-pod.env.example` as a starter:
-
-```bash
-cp .agent-pod.env.example .agent-pod.env
-```
+`agent-pod` first checks the current project for `.agent-pod.env`, then
+`agent-pod.env`; if neither exists, it checks the launcher directory for the
+same filenames. Project-local files take precedence over the central launcher
+file. The dotted name is preferred because it is already ignored by many
+editor/project conventions. These values are loaded when the container starts,
+so restart `agent-pod` after editing the file.
 
 To use a different file:
 
 ```bash
 AGENT_POD_ENV_FILE=.env.agent agent-pod codex
+```
+
+To verify what a new container sees:
+
+```bash
+agent-pod shell env | grep OVERLORD_AGENT_TOKEN
 ```
 
 To forward extra variables from your current shell without an env-file:
@@ -200,7 +211,7 @@ to `0.0.0.0` (not `localhost`) to be reachable from the host.
 |----------|---------|---------|
 | `PORTS` | _(none)_ | Comma-separated ports to publish on localhost |
 | `AGENT_POD_ENV` | _(none)_ | Comma- or space-separated host env var names to forward |
-| `AGENT_POD_ENV_FILE` | `./.agent-pod.env` when present | Docker env-file to load into the container |
+| `AGENT_POD_ENV_FILE` | project `.agent-pod.env`, project `agent-pod.env`, launcher `.agent-pod.env`, launcher `agent-pod.env` | Docker env-file to load into the container |
 | `AGENT_POD_YOLO` | `1` | Set to `0` to drop the auto-approve flags |
 | `AGENT_POD_IMAGE` | `agent-pod` | Image name to build/run |
 | `AGENT_POD_HOME` | `~/.agent-pod` | Where per-agent state is stored |

@@ -20,6 +20,17 @@ CONTAINER_HOME="/home/agent-pod"
 CONTAINER_NPM_PREFIX="$CONTAINER_HOME/.npm-global"
 CONTAINER_PATH="$CONTAINER_NPM_PREFIX/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+  SOURCE_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  LINK_TARGET="$(readlink "$SOURCE")"
+  case "$LINK_TARGET" in
+    /*) SOURCE="$LINK_TARGET";;
+    *) SOURCE="$SOURCE_DIR/$LINK_TARGET";;
+  esac
+done
+LAUNCHER_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+
 # ---- pretty output (auto-disabled when stderr is not a TTY) ---------------
 if [ -t 2 ]; then
   C_INFO=$'\033[34m'; C_OK=$'\033[32m'; C_ERR=$'\033[31m'; C_DIM=$'\033[2m'; C_OFF=$'\033[0m'
@@ -56,7 +67,7 @@ Environment:
   AGENT_POD_ENV=FOO,BAR  Forward additional host environment variables
   AGENT_POD_ENV_FILE=path
                          Load env vars from a Docker env-file
-                         (default: ./.agent-pod.env when present)
+                         (default: project env, then launcher env)
   AGENT_POD_YOLO=0       Do not add the auto-approve flags shown above
   AGENT_POD_IMAGE=name   Image to run (default: agent-pod)
   AGENT_POD_HOME=path    State directory (default: ~/.agent-pod)
@@ -132,7 +143,7 @@ for v in \
   GEMINI_API_KEY GOOGLE_API_KEY OPENROUTER_API_KEY GROQ_API_KEY \
   XAI_API_KEY DEEPSEEK_API_KEY MISTRAL_API_KEY \
   GITHUB_TOKEN GH_TOKEN \
-  OVERLORD_URL OVERLORD_DEVICE_FINGERPRINT; do
+  OVERLORD_URL OVERLORD_AGENT_TOKEN OVERLORD_DEVICE_FINGERPRINT; do
   [ -n "${!v:-}" ] && ENV_FLAGS+=(-e "$v")
 done
 
@@ -156,11 +167,17 @@ if [ -n "${AGENT_POD_ENV:-}" ]; then
   done
 fi
 
-# Project-local env-file ergonomics. Docker reads KEY=VALUE lines and comments;
-# keeping this opt-in avoids implicitly exposing arbitrary .env files.
+# Env-file ergonomics. Docker reads KEY=VALUE lines and comments. Prefer a
+# project-local file, then fall back to a central file next to this launcher.
 ENV_FILE="${AGENT_POD_ENV_FILE:-}"
 if [ -z "$ENV_FILE" ] && [ -f ".agent-pod.env" ]; then
   ENV_FILE=".agent-pod.env"
+elif [ -z "$ENV_FILE" ] && [ -f "agent-pod.env" ]; then
+  ENV_FILE="agent-pod.env"
+elif [ -z "$ENV_FILE" ] && [ -f "$LAUNCHER_DIR/.agent-pod.env" ]; then
+  ENV_FILE="$LAUNCHER_DIR/.agent-pod.env"
+elif [ -z "$ENV_FILE" ] && [ -f "$LAUNCHER_DIR/agent-pod.env" ]; then
+  ENV_FILE="$LAUNCHER_DIR/agent-pod.env"
 fi
 ENV_FILE_FLAGS=()
 if [ -n "$ENV_FILE" ]; then
