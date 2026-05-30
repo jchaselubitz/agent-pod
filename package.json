@@ -1,6 +1,6 @@
 {
-  "name": "@jchaselubitz/agent-pod",
-  "version": "0.1.0",
+  "name": "agent-pod-cli",
+  "version": "1.0.0",
   "description": "Run AI coding-agent CLIs inside a Docker sandbox scoped to the current project.",
   "author": "Jake Chase-Lubitz",
   "bin": {
