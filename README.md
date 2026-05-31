@@ -5,7 +5,7 @@ your **current project directory** — so you can safely let them run in fully
 autonomous ("yolo") mode without exposing your home directory, SSH keys, cloud
 credentials, or other projects.
 
-One image, one launcher, four agents, plus optional Overlord management:
+One image, one launcher, four agents, plus optional Overlord management (check out the [Overlord docs](https://ovld.ai/docs) for more information):
 
 | Agent | CLI | Default autonomous flags |
 |-------|-----|--------------------------|
