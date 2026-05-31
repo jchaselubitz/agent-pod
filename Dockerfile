@@ -25,20 +25,30 @@ ARG INSTALL_CURSOR=1
 # Refresh hook for apt/system packages. `agent-pod update-image` changes this
 # value so Docker re-runs the apt layer instead of reusing stale package lists.
 ARG APT_CACHEBUST=1
+# Static Docker CLI release (not in Debian apt as docker-cli).
+ARG DOCKER_CLI_VERSION=27.5.1
 
 # Baseline dev tooling. git/curl/less are table stakes; jq + gh are reached for
 # by the agents' built-in workflows (JSON pipelines, GitHub PRs/issues).
 # ripgrep + unzip are needed by some of the agent installers/runtimes.
-# docker-cli lets opt-in host socket access talk to the host daemon without
-# running Docker inside this container.
+# Docker CLI (static binary) lets opt-in host socket access talk to the host
+# daemon without running Docker inside this container.
 # EXTRA_APT_PACKAGES lets teams bake in project-specific system dependencies,
 # for example: "python3 python3-pip build-essential".
 RUN echo "$APT_CACHEBUST" >/dev/null \
  && apt-get update \
  && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends \
-      git ca-certificates curl less jq gh ripgrep unzip docker-cli \
+      git ca-certificates curl less jq gh ripgrep unzip \
       $EXTRA_APT_PACKAGES \
+ && ARCH="$(dpkg --print-architecture)" \
+ && case "$ARCH" in \
+      amd64) DOCKER_ARCH=x86_64 ;; \
+      arm64) DOCKER_ARCH=aarch64 ;; \
+      *) echo "Unsupported architecture for Docker CLI: $ARCH" >&2; exit 1 ;; \
+    esac \
+ && curl -fsSL "https://download.docker.com/linux/static/stable/${DOCKER_ARCH}/docker-${DOCKER_CLI_VERSION}.tgz" \
+    | tar xz -C /usr/local/bin --strip-components=1 docker/docker \
  && rm -rf /var/lib/apt/lists/*
 
 # Cache-bust hook: install.sh sets this to $(date +%s) when a "latest" version
