@@ -115,10 +115,12 @@ CLAUDE_CODE_VERSION=2.0.0 OPENCODE_VERSION=0.3.0 ./install.sh
 
 Add project/tooling packages to the image when your agents need them. The
 easiest way is to save them to your config file with `package-add`, so they
-persist across rebuilds:
+persist across rebuilds. For npm packages, pass any package name you want
+installed globally in the image, including scoped packages and version pins:
 
 ```bash
 agent-pod package-add --npm pnpm typescript
+agent-pod package-add --npm @google/gemini-cli prettier@3
 agent-pod package-add --apt python3 python3-pip build-essential
 agent-pod packages            # list what's configured
 agent-pod package-remove --npm typescript
@@ -139,6 +141,26 @@ AGENT_POD_APT_PACKAGES="python3 build-essential" \
 AGENT_POD_NPM_PACKAGES="pnpm typescript" \
 ./install.sh
 ```
+
+### Updating installed CLIs and packages
+
+To refresh the CLIs and packages baked into an existing AgentPod image, run:
+
+```bash
+agent-pod update-image
+```
+
+This rebuilds the Docker image with a fresh base image pull, refreshed apt
+package lists, and fresh npm/vendor CLI installs. It does **not** remove
+`~/.agent-pod/<agent>/`, so agent logins, history, self-updates, and tool
+configuration stay in place. Any currently running agent keeps using the image
+it started with; start a new `agent-pod <agent>` session to use the updated
+image.
+
+`agent-pod install-image` is still the right command for the initial build or
+for applying agent/package configuration changes. `update-image` is the
+maintenance command to pick up newer `latest` CLIs, updated Debian packages,
+updated custom npm packages, and a newer base image without resetting auth.
 
 ### Put the source checkout launcher on your PATH
 
@@ -213,9 +235,11 @@ Manage custom packages baked into the image the same way:
 ```bash
 agent-pod packages
 agent-pod package-add --npm pnpm typescript
+agent-pod package-add --npm @google/gemini-cli prettier@3
 agent-pod package-add --apt python3 build-essential
 agent-pod package-remove --npm typescript
 agent-pod install-image      # rebuild after changing packages
+agent-pod update-image       # refresh installed CLIs/packages without resetting auth
 ```
 
 Anything after the agent name is forwarded straight to the CLI:
@@ -334,6 +358,7 @@ to `0.0.0.0` (not `localhost`) to be reachable from the host.
 | `AGENT_POD_PRUNE_UNTIL_HOURS` | `24` | Auto-prune stopped AgentPod containers older than this; `0` means all stopped AgentPod containers |
 | `AGENT_POD_APT_PACKAGES` | _(none)_ | Extra Debian packages to bake into the image at install time (manage with `agent-pod package-add --apt`) |
 | `AGENT_POD_NPM_PACKAGES` | _(none)_ | Extra global npm packages to bake into the image at install time (manage with `agent-pod package-add --npm`) |
+| `AGENT_POD_REFRESH_IMAGE` | `0` | Set to `1` to force a base-image pull and refresh apt/npm install layers during `install.sh` |
 
 `agent-pod setup`, `agent-pod agent-add`/`agent-remove`, and
 `agent-pod package-add`/`package-remove` write the supported-agent list,

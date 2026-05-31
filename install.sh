@@ -10,6 +10,7 @@ set -eo pipefail
 
 IMAGE="${AGENT_POD_IMAGE:-agent-pod}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
+REFRESH_IMAGE="${AGENT_POD_REFRESH_IMAGE:-0}"
 
 CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-latest}"
 CODEX_VERSION="${CODEX_VERSION:-latest}"
@@ -197,6 +198,15 @@ BUILD_ARGS=(
   --build-arg "EXTRA_APT_PACKAGES=$EXTRA_APT_PACKAGES"
   --build-arg "EXTRA_NPM_PACKAGES=$EXTRA_NPM_PACKAGES"
 )
+DOCKER_BUILD_FLAGS=()
+if [ "$REFRESH_IMAGE" = "1" ]; then
+  refresh_stamp="$(date +%s)"
+  DOCKER_BUILD_FLAGS+=(--pull)
+  BUILD_ARGS+=(
+    --build-arg "APT_CACHEBUST=$refresh_stamp"
+    --build-arg "CACHEBUST=$refresh_stamp"
+  )
+fi
 
 ENABLED_AGENTS="$(resolve_agents)"
 INSTALL_CLAUDE=0; INSTALL_CODEX=0; INSTALL_OPENCODE=0; INSTALL_OVERLORD=0; INSTALL_CURSOR=0
@@ -215,10 +225,14 @@ BUILD_ARGS+=(
 
 # Force a fresh npm fetch whenever any CLI tracks "latest".
 case "$CLAUDE_CODE_VERSION$CODEX_VERSION$OPENCODE_VERSION$OVERLORD_VERSION" in
-  *latest*) BUILD_ARGS+=(--build-arg "CACHEBUST=$(date +%s)");;
+  *latest*) [ "$REFRESH_IMAGE" = "1" ] || BUILD_ARGS+=(--build-arg "CACHEBUST=$(date +%s)");;
 esac
 
-info "Building image '$IMAGE'..."
+if [ "$REFRESH_IMAGE" = "1" ]; then
+  info "Updating image '$IMAGE'..."
+else
+  info "Building image '$IMAGE'..."
+fi
 info "  agents:      $ENABLED_AGENTS"
 [ "$INSTALL_CLAUDE" = "1" ] && info "  claude-code: $CLAUDE_CODE_VERSION"
 [ "$INSTALL_CODEX" = "1" ] && info "  codex:       $CODEX_VERSION"
@@ -228,10 +242,14 @@ info "  agents:      $ENABLED_AGENTS"
 [ -n "$EXTRA_APT_PACKAGES" ] && info "  extra apt:   $EXTRA_APT_PACKAGES"
 [ -n "$EXTRA_NPM_PACKAGES" ] && info "  extra npm:   $EXTRA_NPM_PACKAGES"
 
-docker build "${BUILD_ARGS[@]}" -t "$IMAGE" "$DIR" \
+docker build "${DOCKER_BUILD_FLAGS[@]}" "${BUILD_ARGS[@]}" -t "$IMAGE" "$DIR" \
   || die "Build failed."
 
-ok "Image '$IMAGE' built."
+if [ "$REFRESH_IMAGE" = "1" ]; then
+  ok "Image '$IMAGE' updated."
+else
+  ok "Image '$IMAGE' built."
+fi
 
 # Best-effort version report (non-fatal; some CLIs may probe the network or
 # block, so each probe is bounded by a timeout and never aborts the script).

@@ -269,6 +269,13 @@ run_update() {
   fi
 }
 
+run_update_image() {
+  [ $# -eq 0 ] || die "Usage: agent-pod update-image"
+  info "Updating image '$IMAGE' with fresh CLI and package installs..."
+  info "Per-agent auth and history under $STATE_ROOT are preserved."
+  AGENT_POD_REFRESH_IMAGE=1 exec "$LAUNCHER_DIR/install.sh"
+}
+
 run_edit_env() {
   # Open the active env file in the user's editor. Creates the file (and its
   # parent directory) if it doesn't exist yet.
@@ -604,6 +611,7 @@ Usage:
                                   Remove custom packages from the image
   agent-pod edit-env             Open the active env file in your editor
   agent-pod install-image        Build the Docker image used by agent-pod
+  agent-pod update-image         Refresh CLIs and packages in the Docker image
   agent-pod prune [hours]        Remove stopped AgentPod containers
   agent-pod update               Update agent-pod-cli to the latest version
   agent-pod uninstall            Remove the Docker image and ~/.agent-pod state
@@ -619,6 +627,17 @@ Agents:
 Anything after the agent name is passed straight through to the CLI, e.g.
   agent-pod claude -p "summarize this repo"
   agent-pod codex exec "run the tests"
+  agent-pod package-add --npm pnpm eslint@9
+  agent-pod install-image
+
+Add npm packages of your choice to the image with:
+  agent-pod package-add --npm <package...>
+
+Examples:
+  agent-pod package-add --npm pnpm typescript
+  agent-pod package-add --npm @google/gemini-cli prettier@3
+  agent-pod package-remove --npm typescript
+  agent-pod install-image
 
 Environment:
   PORTS=3000,8080        Publish container ports on 127.0.0.1 only
@@ -636,6 +655,8 @@ Environment:
   AGENT_POD_APT_PACKAGES="python3 build-essential"
                          Extra Debian packages baked into the image
                          (manage with: agent-pod package-add --apt)
+  AGENT_POD_REFRESH_IMAGE=1
+                         Pull the latest base image and refresh apt/npm layers
   AGENT_POD_<AGENT>_AUTO_FLAGS=0
                          Do not add the default flag for one agent
                          (CLAUDE, CODEX, CURSOR)
@@ -678,6 +699,7 @@ case "$1" in
   package-remove|remove-package) shift; run_package_remove "$@"; exit 0;;
   edit-env) run_edit_env; exit 0;;
   update) run_update; exit 0;;
+  update-image) shift; run_update_image "$@"; exit 0;;
   prune) shift; run_prune "$@"; exit 0;;
   install-image)
     exec "$LAUNCHER_DIR/install.sh"
