@@ -5,15 +5,18 @@ your **current project directory** — so you can safely let them run in fully
 autonomous ("yolo") mode without exposing your home directory, SSH keys, cloud
 credentials, or other projects.
 
-One image, one launcher, five agents:
+One image, one launcher, four agents, plus optional Overlord management:
 
 | Agent | CLI | Default autonomous flags |
 |-------|-----|--------------------------|
 | **Claude Code** | `claude` | `--dangerously-skip-permissions` |
 | **OpenAI Codex** | `codex` | `--dangerously-bypass-approvals-and-sandbox` |
 | **OpenCode** | `opencode` | _(uses its own config)_ |
-| **Overlord** | `ovld` | _(uses its own config)_ |
 | **Cursor Agent** | `cursor-agent` | `--force` |
+
+Overlord (`ovld`) is an agent manager package, not an agent. Install it
+independently with `AGENT_POD_OVERLORD=1` when you want AgentPod sessions to
+work with Overlord.
 
 > Inspired by [`claude-pod`](https://github.com/trekhleb/claude-pod), generalized
 > to work across multiple agent CLIs.
@@ -68,10 +71,11 @@ Overlord tickets without stopping for permission prompts.
 `agent-pod setup` creates or updates `~/.agent-pod/.agent-pod.env` — a single
 config file that lives with the CLI, not in whatever directory you run from —
 asks which agent CLIs AgentPod should support, asks whether AgentPod should add
-each selected agent's default autonomous flag, prompts for an Overlord agent
-token when you use Overlord to manage agents, opens the file in your editor
-when possible, and finally offers to build the Docker image now so it's ready
-the first time you launch an agent.
+each selected agent's default autonomous flag, asks separately whether to
+install the Overlord manager package, prompts for an Overlord agent token when
+you use Overlord to manage agents, opens the file in your editor when possible,
+and finally offers to build the Docker image now so it's ready the first time
+you launch an agent.
 
 > Make sure you install with `-g`. Without it, `npm install agent-pod-cli`
 > drops the package into the current project's `node_modules` instead of your
@@ -86,8 +90,10 @@ cd agent-pod
 ```
 
 `install.sh` asks which agents to support when no `AGENT_POD_AGENTS` setting is
-already configured, builds the `agent-pod` image with those CLIs, and then
-prints the installed version of each selected CLI. A successful build ends with:
+already configured, asks separately whether to install `ovld` when
+`AGENT_POD_OVERLORD` is unset, builds the `agent-pod` image with those CLIs, and
+then prints the installed version of each selected agent CLI plus `ovld` when
+the Overlord manager package is installed. A successful build ends with:
 
 ```
 Image 'agent-pod' built.
@@ -95,7 +101,7 @@ Installed versions:
   claude:      ...
   codex:       ...
   opencode:    ...
-  ovld:        ...
+  ovld:        ...  # when AGENT_POD_OVERLORD=1
   cursor-agent: ...
 
 Done. Next steps:
@@ -198,7 +204,8 @@ place.
 agent-pod shell          # opens a prompt like:  agent-pod:/...$
 ```
 
-Inside the sandbox, confirm all five CLIs are present, then `exit`:
+Inside the sandbox, confirm the selected agent CLIs are present. If
+`AGENT_POD_OVERLORD=1`, `ovld` should be present too. Then `exit`:
 
 ```bash
 claude --version
@@ -216,7 +223,6 @@ From inside any project directory:
 agent-pod claude            # Claude Code
 agent-pod codex             # OpenAI Codex
 agent-pod opencode          # OpenCode
-agent-pod overlord          # Overlord
 agent-pod cursor            # Cursor Agent
 agent-pod shell             # a plain shell inside the sandbox
 ```
@@ -225,7 +231,7 @@ Manage supported agents later with:
 
 ```bash
 agent-pod agents
-agent-pod agent-add cursor overlord
+agent-pod agent-add cursor
 agent-pod agent-remove opencode
 agent-pod install-image      # rebuild after changing supported agents
 ```
@@ -337,6 +343,34 @@ PORTS=3000,8080 agent-pod claude
 Ports are bound to `127.0.0.1` only. Dev servers inside the container must bind
 to `0.0.0.0` (not `localhost`) to be reachable from the host.
 
+### Working with host Docker containers
+
+By default agents cannot talk to the host Docker daemon. When a project needs
+that access, for example to inspect or manage a Supabase local stack, enable it
+explicitly:
+
+```bash
+agent-pod docker-access on
+agent-pod shell docker ps
+```
+
+This writes `AGENT_POD_DOCKER_ACCESS=1` to `~/.agent-pod/.agent-pod.env`. You
+can also set it directly for one launch:
+
+```bash
+AGENT_POD_DOCKER_ACCESS=1 agent-pod codex
+```
+
+This does not run Docker inside Docker. It mounts the host Docker socket into
+the pod and uses the Docker CLI installed in the AgentPod image to talk to the
+host daemon. Treat this as privileged access: a process with Docker socket
+access can create containers, mount host paths, and affect containers outside
+the current project. Disable it with:
+
+```bash
+agent-pod docker-access off
+```
+
 ### Configuration
 
 | Variable | Default | Purpose |
@@ -345,7 +379,8 @@ to `0.0.0.0` (not `localhost`) to be reachable from the host.
 | `AGENT_POD_ENV` | _(none)_ | Comma- or space-separated host env var names to forward |
 | `AGENT_POD_ENV_FILE` | `~/.agent-pod/.agent-pod.env`, then legacy project/launcher files | Docker env-file to load into the container |
 | `AGENT_POD_YOLO` | `1` | Set to `0` to drop the auto-approve flags |
-| `AGENT_POD_AGENTS` | `claude,codex,opencode,overlord,cursor` | Comma- or space-separated agent CLIs to build and run |
+| `AGENT_POD_AGENTS` | `claude,codex,opencode,cursor` | Comma- or space-separated agent CLIs to build and run |
+| `AGENT_POD_OVERLORD` | `1` | Set to `0` to skip installing `ovld`, the Overlord agent manager package |
 | `AGENT_POD_CLAUDE_AUTO_FLAGS` | `1` | Set to `0` to omit `--dangerously-skip-permissions` |
 | `AGENT_POD_CODEX_AUTO_FLAGS` | `1` | Set to `0` to omit `--dangerously-bypass-approvals-and-sandbox` |
 | `AGENT_POD_CURSOR_AUTO_FLAGS` | `1` | Set to `0` to omit `--force` |
@@ -359,18 +394,21 @@ to `0.0.0.0` (not `localhost`) to be reachable from the host.
 | `AGENT_POD_APT_PACKAGES` | _(none)_ | Extra Debian packages to bake into the image at install time (manage with `agent-pod package-add --apt`) |
 | `AGENT_POD_NPM_PACKAGES` | _(none)_ | Extra global npm packages to bake into the image at install time (manage with `agent-pod package-add --npm`) |
 | `AGENT_POD_REFRESH_IMAGE` | `0` | Set to `1` to force a base-image pull and refresh apt/npm install layers during `install.sh` |
+| `AGENT_POD_DOCKER_ACCESS` | `0` | Set to `1` to mount the host Docker socket into launched pods |
+| `AGENT_POD_DOCKER_SOCKET` | `/var/run/docker.sock` | Host Docker socket path to mount when Docker access is enabled |
 
 `agent-pod setup`, `agent-pod agent-add`/`agent-remove`, and
 `agent-pod package-add`/`package-remove` write the supported-agent list,
-per-agent autonomous flag choices, and custom package lists into
+Overlord manager package choice, per-agent autonomous flag choices, and custom package lists into
 `~/.agent-pod/.agent-pod.env`. Shell environment values still win over values
 from the file.
 
 ## How it works
 
-`install.sh` builds a Node-based image that installs the four npm CLIs
-(`@anthropic-ai/claude-code`, `@openai/codex`, `opencode-ai`, `overlord-cli`)
-and the Cursor Agent via its vendor installer (relocated to a global path).
+`install.sh` builds a Node-based image that installs the selected npm agent CLIs
+(`@anthropic-ai/claude-code`, `@openai/codex`, `opencode-ai`), optionally
+installs `overlord-cli` as an agent manager package, and installs the Cursor
+Agent via its vendor installer (relocated to a global path).
 
 The `agent-pod` launcher then runs, roughly:
 
@@ -383,6 +421,7 @@ docker run --rm -i [-t] \
   [--env-file ~/.agent-pod/.agent-pod.env] \
   -v ~/.agent-pod/<agent>:/home/agent-pod \   # persisted auth + history
   -v "$PWD:$PWD" -w "$PWD" \                   # only the current project
+  [-v /var/run/docker.sock:/var/run/docker.sock] \
   --cap-drop ALL --security-opt no-new-privileges \
   agent-pod  <cli> <autonomous-flags> [your args]
 ```

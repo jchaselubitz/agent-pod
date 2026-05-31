@@ -88,7 +88,7 @@ upsert_env_var() {
 }
 
 available_agents() {
-  printf '%s\n' "claude codex opencode overlord cursor"
+  printf '%s\n' "claude codex opencode cursor"
 }
 
 normalize_agents() {
@@ -99,7 +99,8 @@ normalize_agents() {
   for agent in $(printf '%s\n' "$raw" | tr '[:upper:],;' '[:lower:]  '); do
     case "$agent" in
       all) printf '%s\n' "$(available_agents)"; return 0;;
-      claude|codex|opencode|overlord|cursor) ;;
+      claude|codex|opencode|cursor) ;;
+      overlord) continue;;
       *) return 1;;
     esac
     case " $normalized " in
@@ -172,6 +173,30 @@ resolve_agents() {
   printf '%s\n' "$agents"
 }
 
+resolve_overlord_install() {
+  if [ -n "${AGENT_POD_OVERLORD:-}" ]; then
+    case "$AGENT_POD_OVERLORD" in
+      1|true|TRUE|yes|YES|y|Y|on|ON) printf '%s\n' 1; return 0;;
+      0|false|FALSE|no|NO|n|N|off|OFF) printf '%s\n' 0; return 0;;
+      *) die "Invalid AGENT_POD_OVERLORD. Use 1 or 0.";;
+    esac
+  fi
+  if value="$(dotenv_get AGENT_POD_OVERLORD "$CONFIG_ENV_FILE" 2>/dev/null)"; then
+    case "$value" in
+      1|true|TRUE|yes|YES|y|Y|on|ON) printf '%s\n' 1; return 0;;
+      0|false|FALSE|no|NO|n|N|off|OFF) printf '%s\n' 0; return 0;;
+      *) die "Invalid AGENT_POD_OVERLORD in $CONFIG_ENV_FILE. Use 1 or 0.";;
+    esac
+  fi
+  if prompt_yes_no "Install Overlord manager package (ovld)?" "yes"; then
+    upsert_env_var "$CONFIG_ENV_FILE" AGENT_POD_OVERLORD 1
+    printf '%s\n' 1
+  else
+    upsert_env_var "$CONFIG_ENV_FILE" AGENT_POD_OVERLORD 0
+    printf '%s\n' 0
+  fi
+}
+
 # Resolve the Overlord agent token the same way the launcher resolves config:
 # an explicit environment variable wins, otherwise fall back to the central
 # config file (~/.agent-pod/.agent-pod.env, or AGENT_POD_ENV_FILE if set).
@@ -209,11 +234,11 @@ if [ "$REFRESH_IMAGE" = "1" ]; then
 fi
 
 ENABLED_AGENTS="$(resolve_agents)"
-INSTALL_CLAUDE=0; INSTALL_CODEX=0; INSTALL_OPENCODE=0; INSTALL_OVERLORD=0; INSTALL_CURSOR=0
+INSTALL_OVERLORD="$(resolve_overlord_install)"
+INSTALL_CLAUDE=0; INSTALL_CODEX=0; INSTALL_OPENCODE=0; INSTALL_CURSOR=0
 agent_in_list claude $ENABLED_AGENTS && INSTALL_CLAUDE=1
 agent_in_list codex $ENABLED_AGENTS && INSTALL_CODEX=1
 agent_in_list opencode $ENABLED_AGENTS && INSTALL_OPENCODE=1
-agent_in_list overlord $ENABLED_AGENTS && INSTALL_OVERLORD=1
 agent_in_list cursor $ENABLED_AGENTS && INSTALL_CURSOR=1
 BUILD_ARGS+=(
   --build-arg "INSTALL_CLAUDE=$INSTALL_CLAUDE"
@@ -285,7 +310,7 @@ setup_overlord_connectors() {
   token="$(resolve_overlord_token || true)"
   [ -n "$token" ] || return 0
   if [ "$INSTALL_OVERLORD" != "1" ]; then
-    warn "Overlord token detected, but Overlord support is disabled. Skipping connector setup."
+    warn "Overlord token detected, but the Overlord manager package is disabled. Skipping connector setup."
     return 0
   fi
 
@@ -330,7 +355,6 @@ $(ok "Done.") Next steps:
   agent-pod claude          # Claude Code
   agent-pod codex           # OpenAI Codex
   agent-pod opencode        # OpenCode
-  agent-pod overlord        # Overlord
   agent-pod cursor          # Cursor Agent
   agent-pod shell           # a plain shell in the sandbox
 EOF

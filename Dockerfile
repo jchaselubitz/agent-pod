@@ -29,13 +29,15 @@ ARG APT_CACHEBUST=1
 # Baseline dev tooling. git/curl/less are table stakes; jq + gh are reached for
 # by the agents' built-in workflows (JSON pipelines, GitHub PRs/issues).
 # ripgrep + unzip are needed by some of the agent installers/runtimes.
+# docker-cli lets opt-in host socket access talk to the host daemon without
+# running Docker inside this container.
 # EXTRA_APT_PACKAGES lets teams bake in project-specific system dependencies,
 # for example: "python3 python3-pip build-essential".
 RUN echo "$APT_CACHEBUST" >/dev/null \
  && apt-get update \
  && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends \
-      git ca-certificates curl less jq gh ripgrep unzip \
+      git ca-certificates curl less jq gh ripgrep unzip docker-cli \
       $EXTRA_APT_PACKAGES \
  && rm -rf /var/lib/apt/lists/*
 
@@ -43,7 +45,8 @@ RUN echo "$APT_CACHEBUST" >/dev/null \
 # is requested, forcing npm to refetch instead of reusing a stale layer.
 ARG CACHEBUST=1
 
-# Node-based CLIs: Claude Code, OpenAI Codex, OpenCode, Overlord.
+# Node-based CLIs: Claude Code, OpenAI Codex, OpenCode, and optional Overlord
+# manager package.
 # Installed in separate layers so a single failing package is easy to spot in
 # the build log (and doesn't invalidate the others' cache). --no-audit/--no-fund
 # keep output focused on real errors.

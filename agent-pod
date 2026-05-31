@@ -4,7 +4,7 @@
 # that can only see the current project directory.
 #
 # Supported agents: claude (Claude Code), codex (OpenAI Codex),
-#                   opencode (OpenCode), overlord (Overlord), cursor (Cursor Agent).
+#                   opencode (OpenCode), cursor (Cursor Agent).
 #
 # Only $PWD is mounted in. Per-agent auth/history is persisted on the host
 # under ~/.agent-pod/<agent>. Everything else (your home dir, SSH keys, other
@@ -122,7 +122,7 @@ nonnegative_integer() {
 }
 
 available_agents() {
-  printf '%s\n' "claude codex opencode overlord cursor"
+  printf '%s\n' "claude codex opencode cursor"
 }
 
 agent_label() {
@@ -131,7 +131,6 @@ agent_label() {
     claude) printf '%s\n' "Claude Code";;
     codex) printf '%s\n' "OpenAI Codex";;
     opencode) printf '%s\n' "OpenCode";;
-    overlord) printf '%s\n' "Overlord";;
     cursor) printf '%s\n' "Cursor Agent";;
     *) printf '%s\n' "$agent";;
   esac
@@ -145,7 +144,8 @@ normalize_agents() {
   for agent in $(printf '%s\n' "$raw" | tr '[:upper:],;' '[:lower:]  '); do
     case "$agent" in
       all) printf '%s\n' "$(available_agents)"; return 0;;
-      claude|codex|opencode|overlord|cursor) ;;
+      claude|codex|opencode|cursor) ;;
+      overlord) continue;;
       *) return 1;;
     esac
     case " $normalized " in
@@ -477,6 +477,33 @@ run_package_remove() {
   info "Rebuild the image to apply the change: agent-pod install-image"
 }
 
+run_docker_access() {
+  [ $# -le 1 ] || die "Usage: agent-pod docker-access [on|off|status]"
+  current="$(config_value AGENT_POD_DOCKER_ACCESS 0)"
+  case "${1:-status}" in
+    on|enable|enabled|1|true|yes)
+      env_file="$(ensure_config_file)"
+      upsert_env_var "$env_file" AGENT_POD_DOCKER_ACCESS 1
+      ok "Docker access enabled for future AgentPod launches."
+      warn "This mounts the host Docker socket and gives agents control of the host Docker daemon."
+      ;;
+    off|disable|disabled|0|false|no)
+      env_file="$(ensure_config_file)"
+      upsert_env_var "$env_file" AGENT_POD_DOCKER_ACCESS 0
+      ok "Docker access disabled for future AgentPod launches."
+      ;;
+    status)
+      if truthy "$current"; then
+        ok "Docker access is enabled."
+      else
+        info "Docker access is disabled."
+      fi
+      info "Config: ${ENV_FILE:-$CONFIG_ENV_FILE}"
+      ;;
+    *) die "Usage: agent-pod docker-access [on|off|status]";;
+  esac
+}
+
 run_setup() {
   # Store config with the CLI (~/.agent-pod/.agent-pod.env) by default rather
   # than dropping a file into the current working directory.
@@ -522,7 +549,6 @@ EOF
   fi
 
   upsert_env_var "$env_file" AGENT_POD_OPENCODE_AUTO_FLAGS 0
-  upsert_env_var "$env_file" AGENT_POD_OVERLORD_AUTO_FLAGS 0
 
   if agent_in_list cursor $chosen_agents; then
     if prompt_yes_no "Use Cursor Agent autonomous flag (--force)?" "yes"; then
@@ -532,7 +558,15 @@ EOF
     fi
   fi
 
-  if agent_in_list overlord $chosen_agents && prompt_yes_no "Do you use Overlord to manage agents?" "yes"; then
+  if prompt_yes_no "Install Overlord manager package (ovld)?" "yes"; then
+    upsert_env_var "$env_file" AGENT_POD_OVERLORD 1
+    use_overlord=1
+  else
+    upsert_env_var "$env_file" AGENT_POD_OVERLORD 0
+    use_overlord=0
+  fi
+
+  if [ "$use_overlord" = "1" ] && prompt_yes_no "Do you use Overlord to manage agents?" "yes"; then
     current_overlord_token="$(dotenv_get OVERLORD_AGENT_TOKEN "$env_file" 2>/dev/null || true)"
     if [ -n "$current_overlord_token" ]; then
       token_prompt="Overlord agent token [leave blank to keep existing]:"
@@ -545,7 +579,7 @@ EOF
     elif [ -z "$current_overlord_token" ]; then
       upsert_env_var "$env_file" OVERLORD_AGENT_TOKEN ""
     fi
-  elif agent_in_list overlord $chosen_agents; then
+  elif [ "$use_overlord" = "1" ]; then
     info "You should: https://www.ovld.ai"
   fi
 
@@ -609,6 +643,8 @@ Usage:
                                   Add custom packages to bake into the image
   agent-pod package-remove [--npm|--apt] <pkg...>
                                   Remove custom packages from the image
+  agent-pod docker-access [on|off|status]
+                                  Show or toggle host Docker socket mounting
   agent-pod edit-env             Open the active env file in your editor
   agent-pod install-image        Build the Docker image used by agent-pod
   agent-pod update-image         Refresh CLIs and packages in the Docker image
@@ -621,7 +657,6 @@ Agents:
   claude     Claude Code      (claude; optional --dangerously-skip-permissions)
   codex      OpenAI Codex     (codex; optional --dangerously-bypass-approvals-and-sandbox)
   opencode   OpenCode         (opencode)
-  overlord   Overlord         (ovld)
   cursor     Cursor Agent     (cursor-agent; optional --force)
 
 Anything after the agent name is passed straight through to the CLI, e.g.
@@ -647,8 +682,9 @@ Environment:
                          (default: ~/.agent-pod/.agent-pod.env, then any
                           legacy project/launcher env file)
   AGENT_POD_YOLO=0       Do not add any AgentPod auto-approve flags
-  AGENT_POD_AGENTS=claude,codex,opencode,overlord,cursor
+  AGENT_POD_AGENTS=claude,codex,opencode,cursor
                          Supported agent CLIs to build and run
+  AGENT_POD_OVERLORD=1   Install ovld, the Overlord agent manager package
   AGENT_POD_NPM_PACKAGES="pnpm typescript"
                          Extra global npm packages baked into the image
                          (manage with: agent-pod package-add [--npm])
@@ -657,6 +693,10 @@ Environment:
                          (manage with: agent-pod package-add --apt)
   AGENT_POD_REFRESH_IMAGE=1
                          Pull the latest base image and refresh apt/npm layers
+  AGENT_POD_DOCKER_ACCESS=1
+                         Mount the host Docker socket into launched pods
+                         (default: /var/run/docker.sock; override with
+                          AGENT_POD_DOCKER_SOCKET)
   AGENT_POD_<AGENT>_AUTO_FLAGS=0
                          Do not add the default flag for one agent
                          (CLAUDE, CODEX, CURSOR)
@@ -697,6 +737,7 @@ case "$1" in
   packages) shift; run_packages_list "$@"; exit 0;;
   package-add|add-package) shift; run_package_add "$@"; exit 0;;
   package-remove|remove-package) shift; run_package_remove "$@"; exit 0;;
+  docker-access) shift; run_docker_access "$@"; exit 0;;
   edit-env) run_edit_env; exit 0;;
   update) run_update; exit 0;;
   update-image) shift; run_update_image "$@"; exit 0;;
@@ -717,7 +758,6 @@ case "$AGENT" in
   claude)   BIN="claude";       YOLO=(--dangerously-skip-permissions);;
   codex)    BIN="codex";        YOLO=(--dangerously-bypass-approvals-and-sandbox);;
   opencode) BIN="opencode";     YOLO=();;
-  overlord) BIN="ovld";         YOLO=();;
   cursor)   BIN="cursor-agent"; YOLO=(--force);;
   shell)    BIN="bash";         YOLO=();;
   *) die "Unknown agent '$AGENT'. Choose: $(available_agents), shell";;
@@ -821,6 +861,21 @@ if [ -n "$ENV_FILE" ]; then
   ENV_FILE_FLAGS+=(--env-file "$ENV_FILE")
 fi
 
+# ---- optional host Docker daemon access ----------------------------------
+DOCKER_ACCESS_FLAGS=()
+if truthy "$(config_value AGENT_POD_DOCKER_ACCESS 0)"; then
+  DOCKER_SOCKET="${AGENT_POD_DOCKER_SOCKET:-/var/run/docker.sock}"
+  [ -S "$DOCKER_SOCKET" ] || die "AGENT_POD_DOCKER_ACCESS is enabled, but Docker socket was not found: $DOCKER_SOCKET"
+  DOCKER_ACCESS_FLAGS+=(-v "$DOCKER_SOCKET:/var/run/docker.sock")
+  if socket_gid="$(stat -f '%g' "$DOCKER_SOCKET" 2>/dev/null || stat -c '%g' "$DOCKER_SOCKET" 2>/dev/null)"; then
+    case "$socket_gid" in
+      ""|*[!0-9]*) ;;
+      *) DOCKER_ACCESS_FLAGS+=(--group-add "$socket_gid");;
+    esac
+  fi
+  warn "Docker access enabled: agents can control the host Docker daemon."
+fi
+
 # ---- assemble the command -------------------------------------------------
 CMD=("$BIN")
 [ ${#YOLO[@]} -gt 0 ] && CMD+=("${YOLO[@]}")
@@ -844,6 +899,7 @@ exec docker run --rm \
   -v "$PWD:$PWD" \
   -w "$PWD" \
   "${PORT_FLAGS[@]}" \
+  "${DOCKER_ACCESS_FLAGS[@]}" \
   --cap-drop ALL \
   --security-opt no-new-privileges \
   "$IMAGE" \
