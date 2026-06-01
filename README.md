@@ -5,7 +5,9 @@ your **current project directory** — so you can safely let them run in fully
 autonomous ("yolo") mode without exposing your home directory, SSH keys, cloud
 credentials, or other projects.
 
-One image, one launcher, four agents, plus optional Overlord management (check out the [Overlord docs](https://ovld.ai/docs) for more information):
+One image, one launcher, four agents. 
+
+> It works for anyone using AI agents, but I designed to work particularly well with Overlord (check out the [Overlord docs](https://ovld.ai/docs) for more information). It already asks if you'd like to use it with Overlord in the CLI setup, but you can also set `AGENT_POD_OVERLORD=1` in your `.agent-pod.env` file to enable it. It will download the Overlord CLI and set up all the agent plugins.
 
 | Agent | CLI | Default autonomous flags |
 |-------|-----|--------------------------|
@@ -14,9 +16,7 @@ One image, one launcher, four agents, plus optional Overlord management (check o
 | **OpenCode** | `opencode` | _(uses its own config)_ |
 | **Cursor Agent** | `cursor-agent` | `--force` |
 
-Overlord (`ovld`) is an agent manager package, not an agent. Install it
-independently with `AGENT_POD_OVERLORD=1` when you want AgentPod sessions to
-work with Overlord.
+
 
 > Inspired by [`claude-pod`](https://github.com/trekhleb/claude-pod), generalized
 > to work across multiple agent CLIs.
