@@ -5,7 +5,7 @@ your **current project directory** — so you can safely let them run in fully
 autonomous ("yolo") mode without exposing your home directory, SSH keys, cloud
 credentials, or other projects.
 
-One image, one launcher, four agents. 
+One image, one launcher — four built-in agents plus any custom agent or harness you define.
 
 > It works for anyone using AI agents, but I designed to work particularly well with Overlord (check out the [Overlord docs](https://ovld.ai/docs) for more information). It already asks if you'd like to use it with Overlord in the CLI setup, but you can also set `AGENT_POD_OVERLORD=1` in your `.agent-pod.env` file to enable it. It will download the Overlord CLI and set up all the agent plugins.
 
@@ -15,6 +15,7 @@ One image, one launcher, four agents.
 | **OpenAI Codex** | `codex` | `--dangerously-bypass-approvals-and-sandbox` |
 | **OpenCode** | `opencode` | _(uses its own config)_ |
 | **Cursor Agent** | `cursor-agent` | `--force` |
+| **Custom** | _(you choose)_ | _(you choose)_ |
 
 
 
@@ -70,12 +71,12 @@ Overlord tickets without stopping for permission prompts.
 
 `agent-pod setup` creates or updates `~/.agent-pod/.agent-pod.env` — a single
 config file that lives with the CLI, not in whatever directory you run from —
-asks which agent CLIs AgentPod should support, asks whether AgentPod should add
-each selected agent's default autonomous flag, asks separately whether to
-install the Overlord manager package, prompts for an Overlord agent token when
-you use Overlord to manage agents, opens the file in your editor when possible,
-and finally offers to build the Docker image now so it's ready the first time
-you launch an agent.
+asks which agent CLIs AgentPod should support, invites you to add custom agents
+or harnesses, asks whether AgentPod should add each selected agent's default
+autonomous flag, asks separately whether to install the Overlord manager package,
+prompts for an Overlord agent token when you use Overlord to manage agents,
+opens the file in your editor when possible, and finally offers to build the
+Docker image now so it's ready the first time you launch an agent.
 
 > Make sure you install with `-g`. Without it, `npm install agent-pod-cli`
 > drops the package into the current project's `node_modules` instead of your
@@ -224,6 +225,7 @@ agent-pod claude            # Claude Code
 agent-pod codex             # OpenAI Codex
 agent-pod opencode          # OpenCode
 agent-pod cursor            # Cursor Agent
+agent-pod gemini            # custom agent (if configured)
 agent-pod shell             # a plain shell inside the sandbox
 ```
 
@@ -232,8 +234,105 @@ Manage supported agents later with:
 ```bash
 agent-pod agents
 agent-pod agent-add cursor
+agent-pod agent-add gemini --bin gemini --flags "--yolo" --npm @google/gemini-cli
 agent-pod agent-remove opencode
 agent-pod install-image      # rebuild after changing supported agents
+```
+
+## Custom agents and harnesses
+
+AgentPod ships with four built-in agents, but you can run **any CLI** inside the
+sandbox — another coding agent, a wrapper script, or a harness you built yourself.
+Configuration lives in `~/.agent-pod/.agent-pod.env` and follows the same
+env-file style as the rest of AgentPod.
+
+### Quick start
+
+During `agent-pod setup`, say yes when asked to add custom agents. You'll enter
+a name, the CLI binary to run, optional default flags, and an optional npm package
+to bake into the image.
+
+Or add one from the command line:
+
+```bash
+agent-pod agent-add pi --bin pi --flags "--yolo" --npm @earendil-works/pi-coding-agent
+agent-pod install-image (use `agent-pod update-image` if it's already installed)
+agent-pod gemini
+```
+
+### Configuration format
+
+Add the agent ID to `AGENT_POD_AGENTS`, then define three optional env vars per
+agent (replace `<ID>` with your agent name in uppercase, hyphens become
+underscores):
+
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `AGENT_POD_<ID>_BIN` | yes | CLI binary to run inside the container |
+| `AGENT_POD_<ID>_FLAGS` | no | Space-separated default flags (e.g. skip-permission flags) |
+| `AGENT_POD_<ID>_NPM` | no | npm package to install globally when building the image |
+
+Example for Pi Coding Agent:
+
+```dotenv
+AGENT_POD_AGENTS=claude,pi
+
+AGENT_POD_PI_BIN=pi
+AGENT_POD_PI_FLAGS=--yolo
+AGENT_POD_PI_NPM=@earendil-works/pi-coding-agent
+```
+
+Example for a custom harness with no npm install (CLI already in `AGENT_POD_NPM_PACKAGES`):
+
+```dotenv
+AGENT_POD_AGENTS=claude,my-harness
+
+AGENT_POD_MY_HARNESS_BIN=my-harness-cli
+AGENT_POD_MY_HARNESS_FLAGS=--skip-permissions --force
+```
+
+Agent IDs must be lowercase letters, numbers, hyphens, or underscores (e.g.
+`pi`, `my-harness`, `opencode_alt`). They cannot reuse built-in names
+(`claude`, `codex`, `opencode`, `cursor`).
+
+### Flags and autonomous mode
+
+Custom agent flags are passed through exactly like typing them on the command
+line. Set `AGENT_POD_<ID>_FLAGS` to whatever skip-permission or force flags your
+CLI expects.
+
+Global toggles still apply:
+
+- `AGENT_POD_YOLO=0` — drop **all** default flags (built-in and custom)
+- Anything after the agent name on the command line is forwarded to the CLI as
+  usual: `agent-pod pi -p "explain this repo"`
+
+### Installing the CLI in the image
+
+Custom agents need their binary available inside the Docker image. Three ways to
+get it there:
+
+1. **`AGENT_POD_<ID>_NPM`** — install a specific npm package when building (recommended for npm-based CLIs)
+2. **`AGENT_POD_NPM_PACKAGES`** or `agent-pod package-add --npm ...` — shared npm packages for multiple agents
+3. **`AGENT_POD_APT_PACKAGES`** — system packages via apt
+
+After changing packages or agent definitions, rebuild:
+
+```bash
+agent-pod install-image
+```
+
+### State and auth
+
+Each agent (built-in or custom) gets its own persisted state directory at
+`~/.agent-pod/<agent-id>/`. Auth, history, and config for custom agents persist
+the same way as for Claude or Codex.
+
+### Inspecting configuration
+
+```bash
+agent-pod agents          # list enabled agents with bin/flags/npm details
+agent-pod edit-env        # open ~/.agent-pod/.agent-pod.env in your editor
 ```
 
 Manage custom packages baked into the image the same way:
@@ -379,7 +478,10 @@ agent-pod docker-access off
 | `AGENT_POD_ENV` | _(none)_ | Comma- or space-separated host env var names to forward |
 | `AGENT_POD_ENV_FILE` | `~/.agent-pod/.agent-pod.env`, then legacy project/launcher files | Docker env-file to load into the container |
 | `AGENT_POD_YOLO` | `1` | Set to `0` to drop the auto-approve flags |
-| `AGENT_POD_AGENTS` | `claude,codex,opencode,cursor` | Comma- or space-separated agent CLIs to build and run |
+| `AGENT_POD_AGENTS` | `claude,codex,opencode,cursor` | Comma- or space-separated agents to build and run (built-in + custom) |
+| `AGENT_POD_<ID>_BIN` | _(none)_ | Custom agent CLI binary (required for custom agents) |
+| `AGENT_POD_<ID>_FLAGS` | _(none)_ | Custom agent default flags (space-separated) |
+| `AGENT_POD_<ID>_NPM` | _(none)_ | npm package to bake into the image for a custom agent |
 | `AGENT_POD_OVERLORD` | `1` | Set to `0` to skip installing `ovld`, the Overlord agent manager package |
 | `AGENT_POD_CLAUDE_AUTO_FLAGS` | `1` | Set to `0` to omit `--dangerously-skip-permissions` |
 | `AGENT_POD_CODEX_AUTO_FLAGS` | `1` | Set to `0` to omit `--dangerously-bypass-approvals-and-sandbox` |

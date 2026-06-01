@@ -3,8 +3,8 @@
 # agent-pod — run an AI coding-agent CLI inside a throwaway Docker container
 # that can only see the current project directory.
 #
-# Supported agents: claude (Claude Code), codex (OpenAI Codex),
-#                   opencode (OpenCode), cursor (Cursor Agent).
+# Supported agents: claude, codex, opencode, cursor (built-in), plus any custom
+# agents you define in ~/.agent-pod/.agent-pod.env.
 #
 # Only $PWD is mounted in. Per-agent auth/history is persisted on the host
 # under ~/.agent-pod/<agent>. Everything else (your home dir, SSH keys, other
@@ -121,8 +121,31 @@ nonnegative_integer() {
   esac
 }
 
-available_agents() {
+builtin_agents() {
   printf '%s\n' "claude codex opencode cursor"
+}
+
+# Backward-compatible alias used in prompts and help text.
+available_agents() {
+  builtin_agents
+}
+
+valid_agent_id() {
+  case "$1" in
+    [a-z][a-z0-9_-]*) return 0;;
+    *) return 1;;
+  esac
+}
+
+is_builtin_agent() {
+  case "$1" in
+    claude|codex|opencode|cursor) return 0;;
+    *) return 1;;
+  esac
+}
+
+agent_env_key() {
+  printf '%s' "$1" | tr '[:lower:]-' '[:upper:]_'
 }
 
 agent_label() {
@@ -136,6 +159,75 @@ agent_label() {
   esac
 }
 
+custom_agent_bin() {
+  local agent="$1"
+  local key
+  key="$(agent_env_key "$agent")"
+  config_value "AGENT_POD_${key}_BIN" ""
+}
+
+custom_agent_flags() {
+  local agent="$1"
+  local key
+  key="$(agent_env_key "$agent")"
+  config_value "AGENT_POD_${key}_FLAGS" ""
+}
+
+custom_agent_npm() {
+  local agent="$1"
+  local key
+  key="$(agent_env_key "$agent")"
+  config_value "AGENT_POD_${key}_NPM" ""
+}
+
+write_custom_agent_config() {
+  local env_file="$1"
+  local agent="$2"
+  local bin="$3"
+  local flags="$4"
+  local npm_pkg="$5"
+  local key
+  key="$(agent_env_key "$agent")"
+  upsert_env_var "$env_file" "AGENT_POD_${key}_BIN" "$bin"
+  if [ -n "$flags" ]; then
+    upsert_env_var "$env_file" "AGENT_POD_${key}_FLAGS" "$flags"
+  fi
+  if [ -n "$npm_pkg" ]; then
+    upsert_env_var "$env_file" "AGENT_POD_${key}_NPM" "$npm_pkg"
+  fi
+}
+
+# Sets global BIN and YOLO for the requested agent.
+resolve_agent_launch() {
+  local agent="$1"
+  YOLO=()
+
+  case "$agent" in
+    claude)   BIN="claude";       YOLO=(--dangerously-skip-permissions);;
+    codex)    BIN="codex";        YOLO=(--dangerously-bypass-approvals-and-sandbox);;
+    opencode) BIN="opencode";     YOLO=();;
+    cursor)   BIN="cursor-agent"; YOLO=(--force);;
+    shell)    BIN="bash";         YOLO=(); return 0;;
+    *)
+      key="$(agent_env_key "$agent")"
+      BIN="$(custom_agent_bin "$agent")"
+      [ -n "$BIN" ] || die "Custom agent '$agent' has no AGENT_POD_${key}_BIN set. Add it with: agent-pod agent-add $agent --bin <cli>"
+      flags="$(custom_agent_flags "$agent")"
+      if [ -n "$flags" ]; then
+        # shellcheck disable=SC2206
+        YOLO=($flags)
+      fi
+      ;;
+  esac
+
+  [ "$(config_value AGENT_POD_YOLO 1)" = "0" ] && YOLO=()
+  case "$agent" in
+    claude) truthy "$(config_value AGENT_POD_CLAUDE_AUTO_FLAGS 1)" || YOLO=();;
+    codex) truthy "$(config_value AGENT_POD_CODEX_AUTO_FLAGS 1)" || YOLO=();;
+    cursor) truthy "$(config_value AGENT_POD_CURSOR_AUTO_FLAGS 1)" || YOLO=();;
+  esac
+}
+
 normalize_agents() {
   local raw normalized agent
   raw="$*"
@@ -143,10 +235,11 @@ normalize_agents() {
   normalized=""
   for agent in $(printf '%s\n' "$raw" | tr '[:upper:],;' '[:lower:]  '); do
     case "$agent" in
-      all) printf '%s\n' "$(available_agents)"; return 0;;
-      claude|codex|opencode|cursor) ;;
+      all) printf '%s\n' "$(builtin_agents)"; return 0;;
       overlord) continue;;
-      *) return 1;;
+      *)
+        valid_agent_id "$agent" || return 1
+        ;;
     esac
     case " $normalized " in
       *" $agent "*) ;;
@@ -171,14 +264,15 @@ agent_in_list() {
 }
 
 supported_agents() {
-  normalize_agents "$(config_value AGENT_POD_AGENTS "$(available_agents)")" \
-    || die "Invalid AGENT_POD_AGENTS value. Choose from: $(available_agents)"
+  normalize_agents "$(config_value AGENT_POD_AGENTS "$(builtin_agents)")" \
+    || die "Invalid AGENT_POD_AGENTS value. Use built-in agents ($(builtin_agents)) or custom agent IDs (lowercase letters, numbers, hyphens, underscores)."
 }
 
 upsert_env_var() {
-  file="$1"
-  key="$2"
-  value="$3"
+  local file="$1"
+  local key="$2"
+  local value="$3"
+  local tmp
   tmp="${file}.tmp.$$"
   if [ -f "$file" ] && grep -Eq "^[[:space:]]*(export[[:space:]]+)?${key}=" "$file"; then
     awk -v key="$key" -v value="$value" '
@@ -225,19 +319,66 @@ prompt_text() {
 }
 
 prompt_agent_selection() {
-  [ -t 0 ] || { available_agents; return 0; }
-  if prompt_yes_no "Support all available agents? ($(available_agents))" "yes"; then
-    available_agents
+  [ -t 0 ] || { builtin_agents; return 0; }
+  if prompt_yes_no "Support all built-in agents? ($(builtin_agents))" "yes"; then
+    builtin_agents
     return 0
   fi
   while true; do
-    reply="$(prompt_text "Agents to support (space/comma separated: $(available_agents)):" || true)"
+    reply="$(prompt_text "Agents to support (space/comma separated; built-in: $(builtin_agents), or custom IDs like gemini):" || true)"
     if normalized="$(normalize_agents "$reply" 2>/dev/null)"; then
       printf '%s\n' "$normalized"
       return 0
     fi
-    warn "Choose one or more agents from: $(available_agents)"
+    warn "Use built-in agents ($(builtin_agents)) or custom IDs (lowercase, e.g. gemini, my-harness)."
   done
+}
+
+prompt_custom_agents() {
+  env_file="$1"
+  current_agents="$2"
+  next_agents="$current_agents"
+
+  [ -t 0 ] || return 0
+  if ! prompt_yes_no "Add custom agents or harnesses? (any CLI you want to run in the sandbox)" "no"; then
+    printf '%s\n' "$next_agents"
+    return 0
+  fi
+
+  if ! grep -q "Custom agent definitions" "$env_file" 2>/dev/null; then
+    cat >> "$env_file" <<'EOF'
+
+# Custom agent definitions (one block per agent).
+# AGENT_POD_<ID>_BIN   CLI binary to run inside the container (required)
+# AGENT_POD_<ID>_FLAGS space-separated default flags (optional)
+# AGENT_POD_<ID>_NPM   npm package to bake into the image (optional)
+EOF
+  fi
+
+  while true; do
+    name="$(prompt_text "Custom agent name (blank to finish, e.g. gemini or my-harness):" || true)"
+    [ -n "$name" ] || break
+    name="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
+    if ! valid_agent_id "$name"; then
+      warn "Invalid name '$name'. Use lowercase letters, numbers, hyphens, or underscores."
+      continue
+    fi
+    if is_builtin_agent "$name"; then
+      warn "'$name' is a built-in agent — add it in the previous step instead."
+      continue
+    fi
+    bin="$(prompt_text "CLI binary to run (e.g. gemini, my-harness-cli):" || true)"
+    [ -n "$bin" ] || { warn "Binary is required for custom agents."; continue; }
+    flags="$(prompt_text "Default flags (optional, e.g. --force or --dangerously-skip-permissions):" || true)"
+    npm_pkg="$(prompt_text "npm package to install in image (optional, e.g. @google/gemini-cli):" || true)"
+    write_custom_agent_config "$env_file" "$name" "$bin" "$flags" "$npm_pkg"
+    if ! agent_in_list "$name" $next_agents; then
+      next_agents="${next_agents:+$next_agents }$name"
+    fi
+    ok "Added custom agent '$name' (binary: $bin${flags:+; flags: $flags}${npm_pkg:+; npm: $npm_pkg})"
+  done
+
+  printf '%s\n' "$next_agents"
 }
 
 open_in_editor() {
@@ -352,25 +493,79 @@ ensure_config_file() {
 run_agents_list() {
   enabled="$(supported_agents)"
   info "Supported agents:"
-  for agent in $(available_agents); do
-    if agent_in_list "$agent" $enabled; then
-      printf '  %-9s %s\n' "$agent" "$(agent_label "$agent")"
+  for agent in $enabled; do
+    if is_builtin_agent "$agent"; then
+      printf '  %-12s %s\n' "$agent" "$(agent_label "$agent")"
+    else
+      bin="$(custom_agent_bin "$agent")"
+      flags="$(custom_agent_flags "$agent")"
+      npm_pkg="$(custom_agent_npm "$agent")"
+      detail="custom"
+      [ -n "$bin" ] && detail="$detail; bin=$bin"
+      [ -n "$flags" ] && detail="$detail; flags=$flags"
+      [ -n "$npm_pkg" ] && detail="$detail; npm=$npm_pkg"
+      printf '  %-12s %s\n' "$agent" "$detail"
     fi
   done
 }
 
 run_agent_add() {
-  [ $# -ge 1 ] || die "Usage: agent-pod agent-add <agent> [agent...]"
-  add_agents="$(normalize_agents "$*" 2>/dev/null)" \
-    || die "Unknown agent. Choose from: $(available_agents)"
+  custom_bin=""
+  custom_flags=""
+  custom_npm=""
+  agent_args=()
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --bin)
+        custom_bin="${2:-}"
+        shift 2
+        ;;
+      --flags)
+        custom_flags="${2:-}"
+        shift 2
+        ;;
+      --npm)
+        custom_npm="${2:-}"
+        shift 2
+        ;;
+      --) shift; agent_args+=("$@"); break;;
+      -*) die "Unknown option '$1'. Custom agents accept --bin, --flags, and --npm.";;
+      *) agent_args+=("$1"); shift;;
+    esac
+  done
+
+  [ ${#agent_args[@]} -ge 1 ] || die "Usage: agent-pod agent-add <agent> [agent...] [--bin <cli>] [--flags \"<flags>\"] [--npm <package>]"
+
+  add_agents="$(normalize_agents "${agent_args[@]}" 2>/dev/null)" \
+    || die "Invalid agent ID. Use built-in agents ($(builtin_agents)) or custom IDs (lowercase, e.g. gemini)."
+
   current_agents="$(supported_agents)"
   next_agents="$current_agents"
+  env_file="$(ensure_config_file)"
+
   for agent in $add_agents; do
+    if is_builtin_agent "$agent"; then
+      if ! agent_in_list "$agent" $next_agents; then
+        next_agents="${next_agents:+$next_agents }$agent"
+      fi
+      continue
+    fi
+    bin="$custom_bin"
+    if [ -z "$bin" ]; then
+      bin="$(custom_agent_bin "$agent")"
+    fi
+    [ -n "$bin" ] || die "Custom agent '$agent' requires --bin <cli>. Example: agent-pod agent-add $agent --bin my-cli --flags \"--force\""
+    flags="$custom_flags"
+    [ -n "$flags" ] || flags="$(custom_agent_flags "$agent")"
+    npm_pkg="$custom_npm"
+    [ -n "$npm_pkg" ] || npm_pkg="$(custom_agent_npm "$agent")"
+    write_custom_agent_config "$env_file" "$agent" "$bin" "$flags" "$npm_pkg"
     if ! agent_in_list "$agent" $next_agents; then
       next_agents="${next_agents:+$next_agents }$agent"
     fi
   done
-  env_file="$(ensure_config_file)"
+
   upsert_env_var "$env_file" AGENT_POD_AGENTS "$(agents_csv "$next_agents")"
   ok "Supported agents: $next_agents"
   info "Rebuild the image to install newly enabled CLIs: agent-pod install-image"
@@ -379,7 +574,7 @@ run_agent_add() {
 run_agent_remove() {
   [ $# -ge 1 ] || die "Usage: agent-pod agent-remove <agent> [agent...]"
   remove_agents="$(normalize_agents "$*" 2>/dev/null)" \
-    || die "Unknown agent. Choose from: $(available_agents)"
+    || die "Invalid agent ID."
   current_agents="$(supported_agents)"
   next_agents=""
   for agent in $current_agents; do
@@ -530,6 +725,7 @@ EOF
   fi
 
   chosen_agents="$(prompt_agent_selection)"
+  chosen_agents="$(prompt_custom_agents "$env_file" "$chosen_agents")"
   upsert_env_var "$env_file" AGENT_POD_AGENTS "$(agents_csv "$chosen_agents")"
 
   if agent_in_list claude $chosen_agents; then
@@ -557,6 +753,21 @@ EOF
       upsert_env_var "$env_file" AGENT_POD_CURSOR_AUTO_FLAGS 0
     fi
   fi
+
+  for agent in $chosen_agents; do
+    is_builtin_agent "$agent" && continue
+    flags="$(custom_agent_flags "$agent")"
+    if [ -n "$flags" ]; then
+      continue
+    fi
+    if prompt_yes_no "Add default flags for custom agent '$agent'? (you can also set AGENT_POD_$(agent_env_key "$agent")_FLAGS in the env file)" "no"; then
+      custom_flags="$(prompt_text "Flags for $agent (e.g. --force):" || true)"
+      if [ -n "$custom_flags" ]; then
+        key="$(agent_env_key "$agent")"
+        upsert_env_var "$env_file" "AGENT_POD_${key}_FLAGS" "$custom_flags"
+      fi
+    fi
+  done
 
   if prompt_yes_no "Install Overlord manager package (ovld)?" "yes"; then
     upsert_env_var "$env_file" AGENT_POD_OVERLORD 1
@@ -653,11 +864,15 @@ Usage:
   agent-pod uninstall            Remove the Docker image and ~/.agent-pod state
   agent-pod --help
 
-Agents:
+Agents (built-in):
   claude     Claude Code      (claude; optional --dangerously-skip-permissions)
   codex      OpenAI Codex     (codex; optional --dangerously-bypass-approvals-and-sandbox)
   opencode   OpenCode         (opencode)
   cursor     Cursor Agent     (cursor-agent; optional --force)
+
+Custom agents:
+  agent-pod agent-add <name> --bin <cli> [--flags "<flags>"] [--npm <package>]
+  agent-pod <name> [args...]   Run any configured custom agent or harness
 
 Anything after the agent name is passed straight through to the CLI, e.g.
   agent-pod claude -p "summarize this repo"
@@ -682,8 +897,12 @@ Environment:
                          (default: ~/.agent-pod/.agent-pod.env, then any
                           legacy project/launcher env file)
   AGENT_POD_YOLO=0       Do not add any AgentPod auto-approve flags
-  AGENT_POD_AGENTS=claude,codex,opencode,cursor
-                         Supported agent CLIs to build and run
+  AGENT_POD_AGENTS=claude,codex,opencode,cursor,gemini
+                         Supported agents to build and run (built-in + custom)
+  AGENT_POD_<ID>_BIN=cli  Custom agent CLI binary (required for custom agents)
+  AGENT_POD_<ID>_FLAGS="--force"
+                         Custom agent default flags (space-separated)
+  AGENT_POD_<ID>_NPM=pkg  npm package to bake into the image for a custom agent
   AGENT_POD_OVERLORD=1   Install ovld, the Overlord agent manager package
   AGENT_POD_NPM_PACKAGES="pnpm typescript"
                          Extra global npm packages baked into the image
@@ -752,29 +971,17 @@ esac
 
 AGENT="$1"; shift
 
-# Map agent -> binary + default auto-approve ("yolo") flags.
-YOLO=()
-case "$AGENT" in
-  claude)   BIN="claude";       YOLO=(--dangerously-skip-permissions);;
-  codex)    BIN="codex";        YOLO=(--dangerously-bypass-approvals-and-sandbox);;
-  opencode) BIN="opencode";     YOLO=();;
-  cursor)   BIN="cursor-agent"; YOLO=(--force);;
-  shell)    BIN="bash";         YOLO=();;
-  *) die "Unknown agent '$AGENT'. Choose: $(available_agents), shell";;
-esac
-
-if [ "$AGENT" != "shell" ]; then
+if [ "$AGENT" = "shell" ]; then
+  BIN="bash"
+  YOLO=()
+else
+  valid_agent_id "$AGENT" \
+    || die "Unknown agent '$AGENT'. Run: agent-pod agents"
   ENABLED_AGENTS="$(supported_agents)"
   agent_in_list "$AGENT" $ENABLED_AGENTS \
-    || die "$(agent_label "$AGENT") is not enabled. Add it with: agent-pod agent-add $AGENT && agent-pod install-image"
+    || die "'$AGENT' is not enabled. Add it with: agent-pod agent-add $AGENT && agent-pod install-image"
+  resolve_agent_launch "$AGENT"
 fi
-
-[ "$(config_value AGENT_POD_YOLO 1)" = "0" ] && YOLO=()
-case "$AGENT" in
-  claude) truthy "$(config_value AGENT_POD_CLAUDE_AUTO_FLAGS 1)" || YOLO=();;
-  codex) truthy "$(config_value AGENT_POD_CODEX_AUTO_FLAGS 1)" || YOLO=();;
-  cursor) truthy "$(config_value AGENT_POD_CURSOR_AUTO_FLAGS 1)" || YOLO=();;
-esac
 
 # ---- preflight ------------------------------------------------------------
 command -v docker >/dev/null 2>&1 || die "Docker is not installed or not on PATH."

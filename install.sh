@@ -62,9 +62,10 @@ dotenv_get() {
 }
 
 upsert_env_var() {
-  file="$1"
-  key="$2"
-  value="$3"
+  local file="$1"
+  local key="$2"
+  local value="$3"
+  local tmp
   tmp="${file}.tmp.$$"
   mkdir -p "$(dirname "$file")" 2>/dev/null || true
   if [ -f "$file" ] && grep -Eq "^[[:space:]]*(export[[:space:]]+)?${key}=" "$file"; then
@@ -91,6 +92,28 @@ available_agents() {
   printf '%s\n' "claude codex opencode cursor"
 }
 
+builtin_agents() {
+  available_agents
+}
+
+valid_agent_id() {
+  case "$1" in
+    [a-z][a-z0-9_-]*) return 0;;
+    *) return 1;;
+  esac
+}
+
+is_builtin_agent() {
+  case "$1" in
+    claude|codex|opencode|cursor) return 0;;
+    *) return 1;;
+  esac
+}
+
+agent_env_key() {
+  printf '%s' "$1" | tr '[:lower:]-' '[:upper:]_'
+}
+
 normalize_agents() {
   local raw normalized agent
   raw="$*"
@@ -99,9 +122,10 @@ normalize_agents() {
   for agent in $(printf '%s\n' "$raw" | tr '[:upper:],;' '[:lower:]  '); do
     case "$agent" in
       all) printf '%s\n' "$(available_agents)"; return 0;;
-      claude|codex|opencode|cursor) ;;
       overlord) continue;;
-      *) return 1;;
+      *)
+        valid_agent_id "$agent" || return 1
+        ;;
     esac
     case " $normalized " in
       *" $agent "*) ;;
@@ -110,6 +134,35 @@ normalize_agents() {
   done
   [ -n "$normalized" ] || return 1
   printf '%s\n' "$normalized"
+}
+
+collect_custom_npm_packages() {
+  local agent key npm_pkg custom_npms=""
+  for agent in $ENABLED_AGENTS; do
+    is_builtin_agent "$agent" && continue
+    key="$(agent_env_key "$agent")"
+    npm_pkg="$(dotenv_get "AGENT_POD_${key}_NPM" "$CONFIG_ENV_FILE" 2>/dev/null || true)"
+    [ -n "$npm_pkg" ] || continue
+    case " $custom_npms " in
+      *" $npm_pkg "*) ;;
+      *) custom_npms="${custom_npms:+$custom_npms }$npm_pkg";;
+    esac
+  done
+  printf '%s\n' "$custom_npms"
+}
+
+merge_package_lists() {
+  local base extra pkg merged=""
+  base="$1"
+  extra="$2"
+  for pkg in $base $extra; do
+    [ -n "$pkg" ] || continue
+    case " $merged " in
+      *" $pkg "*) ;;
+      *) merged="${merged:+$merged }$pkg";;
+    esac
+  done
+  printf '%s\n' "$merged"
 }
 
 agent_in_list() {
@@ -144,28 +197,28 @@ prompt_yes_no() {
 
 prompt_agent_selection() {
   [ -t 0 ] || { available_agents; return 0; }
-  if prompt_yes_no "Build support for all available agents? ($(available_agents))" "yes"; then
+  if prompt_yes_no "Build support for all built-in agents? ($(available_agents))" "yes"; then
     available_agents
     return 0
   fi
   while true; do
-    printf 'Agents to support (space/comma separated: %s): ' "$(available_agents)"
+    printf 'Agents to support (space/comma separated; built-in: %s, or custom IDs): ' "$(available_agents)"
     read -r reply
     if normalized="$(normalize_agents "$reply" 2>/dev/null)"; then
       printf '%s\n' "$normalized"
       return 0
     fi
-    warn "Choose one or more agents from: $(available_agents)"
+    warn "Use built-in agents ($(available_agents)) or custom IDs (lowercase, e.g. gemini)."
   done
 }
 
 resolve_agents() {
   if [ -n "${AGENT_POD_AGENTS:-}" ]; then
-    normalize_agents "$AGENT_POD_AGENTS" || die "Invalid AGENT_POD_AGENTS. Choose from: $(available_agents)"
+    normalize_agents "$AGENT_POD_AGENTS" || die "Invalid AGENT_POD_AGENTS. Use built-in agents ($(available_agents)) or custom agent IDs."
     return 0
   fi
   if agents="$(dotenv_get AGENT_POD_AGENTS "$CONFIG_ENV_FILE" 2>/dev/null)"; then
-    normalize_agents "$agents" || die "Invalid AGENT_POD_AGENTS in $CONFIG_ENV_FILE. Choose from: $(available_agents)"
+    normalize_agents "$agents" || die "Invalid AGENT_POD_AGENTS in $CONFIG_ENV_FILE. Use built-in agents ($(available_agents)) or custom agent IDs."
     return 0
   fi
   agents="$(prompt_agent_selection)"
@@ -215,6 +268,11 @@ resolve_overlord_token() {
 [ -n "$EXTRA_APT_PACKAGES" ] || EXTRA_APT_PACKAGES="$(dotenv_get AGENT_POD_APT_PACKAGES "$CONFIG_ENV_FILE" 2>/dev/null || true)"
 [ -n "$EXTRA_NPM_PACKAGES" ] || EXTRA_NPM_PACKAGES="$(dotenv_get AGENT_POD_NPM_PACKAGES "$CONFIG_ENV_FILE" 2>/dev/null || true)"
 
+ENABLED_AGENTS="$(resolve_agents)"
+INSTALL_OVERLORD="$(resolve_overlord_install)"
+CUSTOM_NPM_PACKAGES="$(collect_custom_npm_packages)"
+EXTRA_NPM_PACKAGES="$(merge_package_lists "$EXTRA_NPM_PACKAGES" "$CUSTOM_NPM_PACKAGES")"
+
 BUILD_ARGS=(
   --build-arg "CLAUDE_CODE_VERSION=$CLAUDE_CODE_VERSION"
   --build-arg "CODEX_VERSION=$CODEX_VERSION"
@@ -233,8 +291,6 @@ if [ "$REFRESH_IMAGE" = "1" ]; then
   )
 fi
 
-ENABLED_AGENTS="$(resolve_agents)"
-INSTALL_OVERLORD="$(resolve_overlord_install)"
 INSTALL_CLAUDE=0; INSTALL_CODEX=0; INSTALL_OPENCODE=0; INSTALL_CURSOR=0
 agent_in_list claude $ENABLED_AGENTS && INSTALL_CLAUDE=1
 agent_in_list codex $ENABLED_AGENTS && INSTALL_CODEX=1
@@ -289,6 +345,14 @@ for probe in "${PROBES[@]}"; do
   out="$(docker run --rm "$IMAGE" sh -lc "timeout 10 $probe </dev/null" 2>/dev/null || true)"
   printf '  %-12s %s\n' "${probe%% *}:" "${out:-"(unavailable)"}"
 done
+for agent in $ENABLED_AGENTS; do
+  is_builtin_agent "$agent" && continue
+  key="$(agent_env_key "$agent")"
+  bin="$(dotenv_get "AGENT_POD_${key}_BIN" "$CONFIG_ENV_FILE" 2>/dev/null || true)"
+  [ -n "$bin" ] || continue
+  out="$(docker run --rm "$IMAGE" sh -lc "timeout 10 $bin --version </dev/null" 2>/dev/null || true)"
+  printf '  %-12s %s\n' "$bin:" "${out:-"(unavailable)"}"
+done
 
 # ---------------------------------------------------------------------------
 # Overlord connector setup (only when an Overlord token is configured).
@@ -320,8 +384,7 @@ setup_overlord_connectors() {
 
   info ""
   info "Overlord token detected — running 'ovld setup all' for each agent..."
-  for agent in claude codex opencode cursor; do
-    agent_in_list "$agent" $ENABLED_AGENTS || continue
+  for agent in $ENABLED_AGENTS; do
     state_dir="$state_root/$agent"
     mkdir -p "$state_dir/.npm-global"
     chmod 700 "$state_root" "$state_dir" 2>/dev/null || true
