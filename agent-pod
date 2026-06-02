@@ -839,6 +839,267 @@ offer_image_build() {
   fi
 }
 
+run_network() {
+  [ $# -le 1 ] || die "Usage: agent-pod network [<name>|off|status]"
+  current="$(config_value AGENT_POD_DOCKER_NETWORK "")"
+  case "${1:-status}" in
+    status)
+      if [ -n "$current" ]; then
+        ok "Pods attach to Docker network: $current"
+      else
+        info "No Docker network attached (pods reach host-published ports via host.docker.internal)."
+      fi
+      info "Config: ${ENV_FILE:-$CONFIG_ENV_FILE}"
+      ;;
+    off|none|disable|disabled|0|false|no)
+      env_file="$(ensure_config_file)"
+      upsert_env_var "$env_file" AGENT_POD_DOCKER_NETWORK ""
+      ok "Pods will no longer attach to a Docker network."
+      ;;
+    -*) die "Usage: agent-pod network [<name>|off|status]";;
+    *)
+      name="$1"
+      env_file="$(ensure_config_file)"
+      upsert_env_var "$env_file" AGENT_POD_DOCKER_NETWORK "$name"
+      ok "Pods will attach to Docker network '$name' on future launches."
+      info "List networks with: agent-pod shell docker network ls (requires agent-pod docker-access on)"
+      ;;
+  esac
+}
+
+# Locate the skills bundled with the CLI. They ship next to the launcher.
+skills_dir() {
+  printf '%s\n' "$LAUNCHER_DIR/skills"
+}
+
+# ---- agent-facing protocol surface ---------------------------------------
+# `agent-pod protocol` is the structured, copy-pasteable help a coding agent
+# reads to configure AgentPod on the user's behalf. Output goes to stdout so it
+# is cleanly capturable. Keep each topic concrete: exact commands, the env-file
+# keys they write, and the rebuild/verify step.
+protocol_overview() {
+  cat <<'EOF'
+agent-pod protocol — controls for configuring the AgentPod sandbox
+
+You are reading this because a user asked an agent to set up or extend AgentPod.
+AgentPod runs coding-agent CLIs inside a throwaway Docker sandbox scoped to the
+current project directory. These commands let you change what that sandbox can
+do. Each topic below prints exact commands, the config keys they write, and the
+rebuild/verify step.
+
+Topics:
+  agent-pod protocol agents     Add a custom agent or harness CLI
+  agent-pod protocol packages   Bake apt/npm tools into the sandbox image
+  agent-pod protocol docker     Reach other containers (e.g. local Supabase)
+  agent-pod protocol skills     Where the packaged agent skills live / install them
+  agent-pod protocol help       This overview
+
+How config is applied:
+  • These commands write to the central config file ~/.agent-pod/.agent-pod.env.
+  • Anything that changes what is installed needs an image rebuild:
+      agent-pod install-image   first build, or after agent/package changes
+      agent-pod update-image    refresh CLIs/packages without resetting auth
+  • Changes only affect NEW pods. A running pod keeps the image it started with.
+
+Where to run:
+  • agent-pod runs on the HOST — it drives the host Docker daemon and edits the
+    host config file. Run it where `agent-pod` is on PATH, not from inside a pod.
+
+Inspect current state:
+  agent-pod agents              Enabled agents (with bin/flags/npm)
+  agent-pod packages            Custom apt/npm packages baked into the image
+  agent-pod docker-access status
+  agent-pod network status
+EOF
+}
+
+protocol_agents() {
+  cat <<'EOF'
+agent-pod protocol agents — add a custom agent or harness
+
+AgentPod ships built-in agents (claude, codex, opencode, cursor/agent). You can
+add ANY other CLI — another coding agent, a wrapper, or a harness you built.
+
+Add one (writes config and enables it):
+  agent-pod agent-add <id> --bin <cli> [--flags "<flags>"] [--npm <package>]
+
+  <id>      lowercase letters/numbers/-/_ (e.g. gemini, my-harness). Not a built-in name.
+  --bin     the binary to run inside the container (required)
+  --flags   default flags passed every run (e.g. autonomous/skip-permission flags)
+  --npm     npm package to install into the image so <bin> exists
+
+Examples:
+  agent-pod agent-add gemini --bin gemini --flags "--yolo" --npm @google/gemini-cli
+  agent-pod agent-add pi --bin pi --flags "--yolo" --npm @earendil-works/pi-coding-agent
+  agent-pod install-image          # rebuild so the new CLI is present
+  agent-pod gemini                 # run it, scoped to the current project
+
+If the binary comes from somewhere other than a single npm package, install it
+via packages instead of --npm (see: agent-pod protocol packages), then:
+  agent-pod agent-add my-harness --bin my-harness-cli --flags "--force"
+
+Config keys written to ~/.agent-pod/.agent-pod.env:
+  AGENT_POD_AGENTS=claude,codex,...,<id>     supported agent list
+  AGENT_POD_<ID>_BIN=<cli>                   binary (<ID> = id uppercased, - -> _)
+  AGENT_POD_<ID>_FLAGS=<flags>               optional default flags
+  AGENT_POD_<ID>_NPM=<package>               optional npm package baked at build
+
+Manage / verify:
+  agent-pod agents                 list enabled agents with their details
+  agent-pod agent-remove <id>      stop supporting an agent
+  agent-pod install-image          rebuild after any change above
+
+Notes:
+  • AGENT_POD_YOLO=0 drops ALL default flags (built-in and custom).
+  • Each agent gets its own persisted auth/history at ~/.agent-pod/<id>/.
+EOF
+}
+
+protocol_packages() {
+  cat <<'EOF'
+agent-pod protocol packages — make sure the sandbox image has what the user needs
+
+Tools and libraries the agent needs at runtime must be baked into the image.
+Two package channels:
+  --npm   global npm packages (default)        e.g. pnpm, typescript, prettier@3
+  --apt   Debian system packages via apt-get   e.g. python3, build-essential, postgresql-client
+
+Add (persisted to config, applied on next rebuild):
+  agent-pod package-add --npm <pkg...>
+  agent-pod package-add --apt <pkg...>
+
+Examples:
+  agent-pod package-add --npm pnpm typescript
+  agent-pod package-add --apt python3 python3-pip build-essential
+  agent-pod package-add --apt postgresql-client       # psql, for DB work
+  agent-pod install-image                              # rebuild to install them
+
+Remove / list:
+  agent-pod package-remove --npm typescript
+  agent-pod package-remove --apt python3
+  agent-pod packages                                   # show what's configured
+
+Config keys written to ~/.agent-pod/.agent-pod.env:
+  AGENT_POD_NPM_PACKAGES="pnpm typescript"    space-separated global npm packages
+  AGENT_POD_APT_PACKAGES="python3 build-essential"  space-separated Debian packages
+
+Rebuild to apply:
+  agent-pod install-image          builds/applies package changes
+  agent-pod update-image           refresh installed CLIs/packages, keep auth
+
+Verify a tool is present in a fresh pod:
+  agent-pod shell <tool> --version     e.g. agent-pod shell python3 --version
+EOF
+}
+
+protocol_docker() {
+  cat <<'EOF'
+agent-pod protocol docker — let the pod reach other Docker containers
+
+By default a pod only sees the current project directory and cannot control the
+host Docker daemon. A common need is reaching OTHER containers — for example a
+local Supabase stack — so the agent can apply migrations, query the DB, etc.
+
+There are two independent capabilities. Enable whichever the task needs.
+
+1) Docker daemon control (inspect/manage containers, run docker commands)
+   agent-pod docker-access on        # mount the host Docker socket into pods
+   agent-pod docker-access status
+   agent-pod docker-access off
+   Then, inside a pod: docker ps, docker logs, docker exec, docker network ls, ...
+   PRIVILEGED: socket access = full control of the host Docker daemon. Enable
+   only when needed; turn it off when done.
+
+2) Network reachability (talk to services those containers expose)
+   • Host-published ports work out of the box from inside the pod via the host
+     gateway. A service on the host at localhost:PORT is reachable at:
+         host.docker.internal:PORT
+   • To reach containers directly by name on their own Docker network, attach
+     the pod to that network:
+         agent-pod network <network-name>     # set the network to join
+         agent-pod network status
+         agent-pod network off                # stop attaching
+
+Example — apply migrations against a local Supabase stack:
+  # 1. Start Supabase on the host (publishes the DB on localhost:54322 by default)
+  supabase start
+  # 2. Make the Supabase/Postgres client available in the pod
+  agent-pod package-add --apt postgresql-client
+  agent-pod install-image
+  # 3a. Reach the published DB port from inside the pod via the host gateway:
+  agent-pod shell psql "postgresql://postgres:postgres@host.docker.internal:54322/postgres" -c '\dt'
+  #     ...or run your migration tool against that connection string.
+  # 3b. Or, to use Supabase's own network and container DNS names, find and join it:
+  agent-pod docker-access on
+  agent-pod shell docker network ls          # look for supabase_network_<project>
+  agent-pod network supabase_network_<project>
+  #     then reach the db container directly, e.g. host "supabase_db_<project>".
+
+Config keys written to ~/.agent-pod/.agent-pod.env:
+  AGENT_POD_DOCKER_ACCESS=1                 mount the host Docker socket
+  AGENT_POD_DOCKER_SOCKET=/var/run/docker.sock   socket path (override if non-standard)
+  AGENT_POD_DOCKER_NETWORK=<name>           Docker network pods attach to
+
+Notes:
+  • host.docker.internal is always available inside pods (no opt-in needed).
+  • Network/socket settings apply to NEW pods; restart the pod after changing them.
+EOF
+}
+
+protocol_skills() {
+  dir="$(skills_dir)"
+  case "${1:-}" in
+    --install|install)
+      target="${2:-.claude/skills}"
+      [ -d "$dir" ] || die "Packaged skills not found at: $dir"
+      mkdir -p "$target" || die "Could not create $target"
+      cp -R "$dir/." "$target/" || die "Could not copy skills into $target"
+      ok "Installed AgentPod skills into $target"
+      info "Restart your agent (or reload skills) so it picks them up."
+      ;;
+    ""|list)
+      cat <<EOF
+agent-pod protocol skills — agent skills packaged with the CLI
+
+AgentPod ships skills that teach coding agents how to configure the sandbox.
+They simply point the agent at 'agent-pod protocol' (this command), so the
+authoritative instructions stay in one place.
+
+Location (bundled with the CLI):
+  $dir
+
+Install them into a project so a Claude Code agent discovers them:
+  agent-pod protocol skills --install            # -> ./.claude/skills/
+  agent-pod protocol skills --install <dir>      # custom destination
+
+Bundled skills:
+EOF
+      if [ -d "$dir" ]; then
+        for s in "$dir"/*/; do
+          [ -d "$s" ] || continue
+          printf '  %s\n' "$(basename "$s")"
+        done
+      else
+        printf '  (none found at %s)\n' "$dir"
+      fi
+      ;;
+    *) die "Usage: agent-pod protocol skills [--install [dir]]";;
+  esac
+}
+
+run_protocol() {
+  topic="${1:-help}"
+  [ $# -gt 0 ] && shift || true
+  case "$topic" in
+    help|-h|--help|"") protocol_overview;;
+    agents|agent|harness|harnesses) protocol_agents;;
+    packages|package|deps|dependencies) protocol_packages;;
+    docker|docker-access|containers|network|networking|supabase) protocol_docker;;
+    skills|skill) protocol_skills "$@";;
+    *) die "Unknown protocol topic '$topic'. Run: agent-pod protocol help";;
+  esac
+}
+
 usage() {
   cat >&2 <<EOF
 agent-pod — sandboxed AI coding agents in Docker
@@ -858,6 +1119,10 @@ Usage:
                                   Remove custom packages from the image
   agent-pod docker-access [on|off|status]
                                   Show or toggle host Docker socket mounting
+  agent-pod network [<name>|off|status]
+                                  Attach launched pods to a Docker network
+  agent-pod protocol [topic]     Agent-facing help for configuring the sandbox
+                                  (topics: agents, packages, docker, skills)
   agent-pod edit-env             Open the active env file in your editor
   agent-pod install-image        Build the Docker image used by agent-pod
   agent-pod update-image         Refresh CLIs and packages in the Docker image
@@ -883,52 +1148,18 @@ Anything after the agent name is passed straight through to the CLI, e.g.
   agent-pod package-add --npm pnpm eslint@9
   agent-pod install-image
 
-Add npm packages of your choice to the image with:
-  agent-pod package-add --npm <package...>
+Configuring the sandbox (custom agents, packages, Docker/Supabase access):
+  Easiest path — ask your coding agent to do it. Tell it to read
+  'agent-pod protocol help' and configure what you need, e.g.
+    "Check 'agent-pod protocol help', add the gemini CLI, install psql, and
+     give the pod access to my local Supabase so you can apply migrations."
+  Or run 'agent-pod protocol help' yourself for the exact commands.
 
-Examples:
-  agent-pod package-add --npm pnpm typescript
-  agent-pod package-add --npm @google/gemini-cli prettier@3
-  agent-pod package-remove --npm typescript
-  agent-pod install-image
-
-Environment:
-  PORTS=3000,8080        Publish container ports on 127.0.0.1 only
-  AGENT_POD_ENV=FOO,BAR  Forward additional host environment variables
-  AGENT_POD_ENV_FILE=path
-                         Load env vars from a Docker env-file
-                         (default: ~/.agent-pod/.agent-pod.env, then any
-                          legacy project/launcher env file)
-  AGENT_POD_YOLO=0       Do not add any AgentPod auto-approve flags
-  AGENT_POD_AGENTS=claude,codex,opencode,cursor,gemini
-                         Supported agents to build and run (built-in + custom)
-  AGENT_POD_<ID>_BIN=cli  Custom agent CLI binary (required for custom agents)
-  AGENT_POD_<ID>_FLAGS="--force"
-                         Custom agent default flags (space-separated)
-  AGENT_POD_<ID>_NPM=pkg  npm package to bake into the image for a custom agent
-  AGENT_POD_OVERLORD=1   Install ovld, the Overlord agent manager package
-  AGENT_POD_NPM_PACKAGES="pnpm typescript"
-                         Extra global npm packages baked into the image
-                         (manage with: agent-pod package-add [--npm])
-  AGENT_POD_APT_PACKAGES="python3 build-essential"
-                         Extra Debian packages baked into the image
-                         (manage with: agent-pod package-add --apt)
-  AGENT_POD_REFRESH_IMAGE=1
-                         Pull the latest base image and refresh apt/npm layers
-  AGENT_POD_DOCKER_ACCESS=1
-                         Mount the host Docker socket into launched pods
-                         (default: /var/run/docker.sock; override with
-                          AGENT_POD_DOCKER_SOCKET)
-  AGENT_POD_<AGENT>_AUTO_FLAGS=0
-                         Do not add the default flag for one agent
-                         (CLAUDE, CODEX, CURSOR)
-  AGENT_POD_IMAGE=name   Image to run (default: agent-pod)
-  AGENT_POD_HOME=path    State directory (default: ~/.agent-pod)
-  AGENT_POD_AUTO_PRUNE=0 Disable periodic stopped-container pruning
-  AGENT_POD_PRUNE_INTERVAL_HOURS=24
-                         How often launches try automatic pruning
-  AGENT_POD_PRUNE_UNTIL_HOURS=24
-                         Auto-prune stopped AgentPod containers older than this
+Configuration & environment variables (PORTS, AGENT_POD_ENV_FILE,
+AGENT_POD_AGENTS, AGENT_POD_DOCKER_ACCESS, auth keys, pruning, and more):
+  agent-pod setup        Guided setup of ~/.agent-pod/.agent-pod.env
+  agent-pod edit-env     Open the active env file in your editor
+  Full reference: https://github.com/jchaselubitz/agent-pod#readme
 
 Auth: log in interactively once (it persists), or export a provider key
 (ANTHROPIC_API_KEY, OPENAI_API_KEY, CURSOR_API_KEY, ...) and it is forwarded
@@ -960,6 +1191,8 @@ case "$1" in
   package-add|add-package) shift; run_package_add "$@"; exit 0;;
   package-remove|remove-package) shift; run_package_remove "$@"; exit 0;;
   docker-access) shift; run_docker_access "$@"; exit 0;;
+  network) shift; run_network "$@"; exit 0;;
+  protocol) shift; run_protocol "$@"; exit 0;;
   edit-env) run_edit_env; exit 0;;
   update) run_update; exit 0;;
   update-image) shift; run_update_image "$@"; exit 0;;
@@ -1086,6 +1319,18 @@ if truthy "$(config_value AGENT_POD_DOCKER_ACCESS 0)"; then
   warn "Docker access enabled: agents can control the host Docker daemon."
 fi
 
+# ---- container networking -------------------------------------------------
+# Always give pods a name for the host so they can reach host-published ports
+# (e.g. a local Supabase stack on 127.0.0.1:54322) via host.docker.internal,
+# including on Linux where that name isn't resolved automatically. Optionally
+# attach the pod to a Docker network so it can reach other containers by name.
+NETWORK_FLAGS=(--add-host "host.docker.internal:host-gateway")
+DOCKER_NETWORK_VALUE="$(config_value AGENT_POD_DOCKER_NETWORK "")"
+if [ -n "$DOCKER_NETWORK_VALUE" ]; then
+  NETWORK_FLAGS+=(--network "$DOCKER_NETWORK_VALUE")
+  info "Attaching pod to Docker network: $DOCKER_NETWORK_VALUE"
+fi
+
 # ---- assemble the command -------------------------------------------------
 CMD=("$BIN")
 [ ${#YOLO[@]} -gt 0 ] && CMD+=("${YOLO[@]}")
@@ -1110,6 +1355,7 @@ exec docker run --rm \
   -w "$PWD" \
   "${PORT_FLAGS[@]}" \
   "${DOCKER_ACCESS_FLAGS[@]}" \
+  "${NETWORK_FLAGS[@]}" \
   --cap-drop ALL \
   --security-opt no-new-privileges \
   "$IMAGE" \

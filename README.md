@@ -22,6 +22,42 @@ One image, one launcher — four built-in agents plus any custom agent or harnes
 > Inspired by [`claude-pod`](https://github.com/trekhleb/claude-pod), generalized
 > to work across multiple agent CLIs.
 
+## Let an agent configure AgentPod for you
+
+You don't have to memorize the flags below. AgentPod ships an **agent-facing
+control surface** so you can hand the configuration work to a coding agent.
+Just tell your agent something like:
+
+> "Check `agent-pod protocol help` and set this up: add the Gemini CLI as an
+> agent, make sure `python3` and `psql` are in the sandbox, and give the pod
+> access to my local Supabase containers so you can apply migrations."
+
+The agent runs `agent-pod protocol help`, reads the exact commands for each
+task, applies them, and rebuilds the image. The protocol command is the
+authoritative, always-current reference for the three things people most often
+need to configure:
+
+```bash
+agent-pod protocol help        # overview + topic index
+agent-pod protocol agents      # add a custom agent / harness CLI
+agent-pod protocol packages    # bake apt/npm tools into the sandbox image
+agent-pod protocol docker      # reach other containers (e.g. local Supabase)
+agent-pod protocol skills      # where the packaged skills live / install them
+```
+
+AgentPod also packages a Claude Code **skill** (`configure-agent-pod`) that
+points agents at `agent-pod protocol` automatically. Install it into a project
+so your agent discovers it on its own:
+
+```bash
+agent-pod protocol skills --install   # copies the skill into ./.claude/skills/
+```
+
+Because `agent-pod` runs on the host (it drives the host Docker daemon and edits
+the host config file), run these from a place where `agent-pod` is on your
+`PATH` — for example a Claude Code or Codex session on your machine — not from
+inside an already-running pod.
+
 ## Why
 
 These CLIs are most useful when they can edit files and run commands without
@@ -444,9 +480,13 @@ to `0.0.0.0` (not `localhost`) to be reachable from the host.
 
 ### Working with host Docker containers
 
-By default agents cannot talk to the host Docker daemon. When a project needs
-that access, for example to inspect or manage a Supabase local stack, enable it
-explicitly:
+A common task is letting the pod reach **other containers** — for example a
+local Supabase stack — so the agent can apply migrations, query the database, or
+inspect services. There are two independent capabilities; enable whichever the
+task needs. (`agent-pod protocol docker` prints this same guidance for an agent
+to follow.)
+
+**1. Docker daemon control** — inspect or manage containers from inside the pod:
 
 ```bash
 agent-pod docker-access on
@@ -460,14 +500,51 @@ can also set it directly for one launch:
 AGENT_POD_DOCKER_ACCESS=1 agent-pod codex
 ```
 
-This does not run Docker inside Docker. It mounts the host Docker socket into
-the pod and uses the Docker CLI installed in the AgentPod image to talk to the
-host daemon. Treat this as privileged access: a process with Docker socket
-access can create containers, mount host paths, and affect containers outside
-the current project. Disable it with:
+It does not run Docker inside Docker. It mounts the host Docker socket into the
+pod and uses the Docker CLI installed in the AgentPod image to talk to the host
+daemon. Treat this as privileged access: a process with Docker socket access can
+create containers, mount host paths, and affect containers outside the current
+project. Disable it with `agent-pod docker-access off`.
+
+**2. Network reachability** — talk to services those containers expose:
+
+- **Host-published ports work out of the box.** Pods always get a
+  `host.docker.internal` name for the host, so a service published on the host
+  at `127.0.0.1:PORT` is reachable from inside the pod at
+  `host.docker.internal:PORT` (this works on Linux too, not just Docker
+  Desktop).
+- **To reach containers directly by name** on their own Docker network, attach
+  the pod to that network:
+
+  ```bash
+  agent-pod network <network-name>   # e.g. supabase_network_myproject
+  agent-pod network status
+  agent-pod network off              # stop attaching
+  ```
+
+  This writes `AGENT_POD_DOCKER_NETWORK` to `~/.agent-pod/.agent-pod.env`.
+
+#### Example: apply Supabase migrations from the pod
 
 ```bash
-agent-pod docker-access off
+supabase start                                 # publishes the DB on 127.0.0.1:54322
+agent-pod package-add --apt postgresql-client  # make psql available in the pod
+agent-pod install-image                        # rebuild to install it
+
+# Reach the published DB port from inside the pod via the host gateway:
+agent-pod shell psql \
+  "postgresql://postgres:postgres@host.docker.internal:54322/postgres" -c '\dt'
+# ...or run your migration tool against that connection string.
+```
+
+Prefer container DNS names instead of published ports? Join the Supabase
+network and address the database container directly:
+
+```bash
+agent-pod docker-access on
+agent-pod shell docker network ls              # find supabase_network_<project>
+agent-pod network supabase_network_<project>
+# then reach the db container by host name, e.g. supabase_db_<project>
 ```
 
 ### Configuration
@@ -496,8 +573,9 @@ agent-pod docker-access off
 | `AGENT_POD_APT_PACKAGES` | _(none)_ | Extra Debian packages to bake into the image at install time (manage with `agent-pod package-add --apt`) |
 | `AGENT_POD_NPM_PACKAGES` | _(none)_ | Extra global npm packages to bake into the image at install time (manage with `agent-pod package-add --npm`) |
 | `AGENT_POD_REFRESH_IMAGE` | `0` | Set to `1` to force a base-image pull and refresh apt/npm install layers during `install.sh` |
-| `AGENT_POD_DOCKER_ACCESS` | `0` | Set to `1` to mount the host Docker socket into launched pods |
+| `AGENT_POD_DOCKER_ACCESS` | `0` | Set to `1` to mount the host Docker socket into launched pods (manage with `agent-pod docker-access`) |
 | `AGENT_POD_DOCKER_SOCKET` | `/var/run/docker.sock` | Host Docker socket path to mount when Docker access is enabled |
+| `AGENT_POD_DOCKER_NETWORK` | _(none)_ | Docker network to attach launched pods to, so they can reach other containers by name (manage with `agent-pod network`) |
 
 `agent-pod setup`, `agent-pod agent-add`/`agent-remove`, and
 `agent-pod package-add`/`package-remove` write the supported-agent list,
