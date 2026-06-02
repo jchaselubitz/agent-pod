@@ -154,7 +154,7 @@ agent_label() {
     claude) printf '%s\n' "Claude Code";;
     codex) printf '%s\n' "OpenAI Codex";;
     opencode) printf '%s\n' "OpenCode";;
-    cursor) printf '%s\n' "Cursor Agent (cursor-agent alias)";;
+    cursor) printf '%s\n' "Cursor Agent (agent alias)";;
     agent) printf '%s\n' "Cursor Agent";;
     *) printf '%s\n' "$agent";;
   esac
@@ -207,7 +207,7 @@ resolve_agent_launch() {
     claude)   BIN="claude";       YOLO=(--dangerously-skip-permissions);;
     codex)    BIN="codex";        YOLO=(--dangerously-bypass-approvals-and-sandbox);;
     opencode) BIN="opencode";     YOLO=();;
-    cursor)   BIN="cursor-agent"; YOLO=(--force);;
+    cursor)   BIN="agent";        YOLO=(--force);;
     agent)    BIN="agent";        YOLO=(--force);;
     shell)    BIN="bash";         YOLO=(); return 0;;
     *)
@@ -1136,7 +1136,7 @@ Agents (built-in):
   codex      OpenAI Codex     (codex; optional --dangerously-bypass-approvals-and-sandbox)
   opencode   OpenCode         (opencode)
   agent      Cursor Agent     (agent; optional --force)
-  cursor     Cursor Agent     (cursor-agent alias; optional --force)
+  cursor     Cursor Agent     (agent alias; optional --force)
 
 Custom agents:
   agent-pod agent-add <name> --bin <cli> [--flags "<flags>"] [--npm <package>]

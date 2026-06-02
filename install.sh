@@ -419,6 +419,6 @@ $(ok "Done.") Next steps:
   agent-pod codex           # OpenAI Codex
   agent-pod opencode        # OpenCode
   agent-pod agent           # Cursor Agent (agent CLI)
-  agent-pod cursor          # Cursor Agent (cursor-agent alias)
+  agent-pod cursor          # Cursor Agent (agent alias)
   agent-pod shell           # a plain shell in the sandbox
 EOF

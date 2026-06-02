@@ -14,7 +14,7 @@ One image, one launcher — four built-in agents plus any custom agent or harnes
 | **Claude Code** | `claude` | `--dangerously-skip-permissions` |
 | **OpenAI Codex** | `codex` | `--dangerously-bypass-approvals-and-sandbox` |
 | **OpenCode** | `opencode` | _(uses its own config)_ |
-| **Cursor Agent** | `cursor-agent` | `--force` |
+| **Cursor Agent** | `agent` | `--force` |
 | **Custom** | _(you choose)_ | _(you choose)_ |
 
 
@@ -139,7 +139,7 @@ Installed versions:
   codex:       ...
   opencode:    ...
   ovld:        ...  # when AGENT_POD_OVERLORD=1
-  cursor-agent: ...
+  agent:        ...
 
 Done. Next steps:
   ...
@@ -249,7 +249,7 @@ claude --version
 codex --version
 opencode --version
 ovld version
-cursor-agent --version
+agent --version
 ```
 
 ## Usage
