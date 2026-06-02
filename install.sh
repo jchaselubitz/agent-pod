@@ -89,7 +89,7 @@ upsert_env_var() {
 }
 
 available_agents() {
-  printf '%s\n' "claude codex opencode cursor"
+  printf '%s\n' "claude codex opencode cursor agent"
 }
 
 builtin_agents() {
@@ -105,7 +105,7 @@ valid_agent_id() {
 
 is_builtin_agent() {
   case "$1" in
-    claude|codex|opencode|cursor) return 0;;
+    claude|codex|opencode|cursor|agent) return 0;;
     *) return 1;;
   esac
 }
@@ -295,7 +295,7 @@ INSTALL_CLAUDE=0; INSTALL_CODEX=0; INSTALL_OPENCODE=0; INSTALL_CURSOR=0
 agent_in_list claude $ENABLED_AGENTS && INSTALL_CLAUDE=1
 agent_in_list codex $ENABLED_AGENTS && INSTALL_CODEX=1
 agent_in_list opencode $ENABLED_AGENTS && INSTALL_OPENCODE=1
-agent_in_list cursor $ENABLED_AGENTS && INSTALL_CURSOR=1
+{ agent_in_list cursor $ENABLED_AGENTS || agent_in_list agent $ENABLED_AGENTS; } && INSTALL_CURSOR=1
 BUILD_ARGS+=(
   --build-arg "INSTALL_CLAUDE=$INSTALL_CLAUDE"
   --build-arg "INSTALL_CODEX=$INSTALL_CODEX"
@@ -340,7 +340,7 @@ PROBES=()
 [ "$INSTALL_CODEX" = "1" ] && PROBES+=("codex --version")
 [ "$INSTALL_OPENCODE" = "1" ] && PROBES+=("opencode --version")
 [ "$INSTALL_OVERLORD" = "1" ] && PROBES+=("ovld version")
-[ "$INSTALL_CURSOR" = "1" ] && PROBES+=("cursor-agent --version")
+[ "$INSTALL_CURSOR" = "1" ] && PROBES+=("agent --version")
 for probe in "${PROBES[@]}"; do
   out="$(docker run --rm "$IMAGE" sh -lc "timeout 10 $probe </dev/null" 2>/dev/null || true)"
   printf '  %-12s %s\n' "${probe%% *}:" "${out:-"(unavailable)"}"
@@ -418,6 +418,7 @@ $(ok "Done.") Next steps:
   agent-pod claude          # Claude Code
   agent-pod codex           # OpenAI Codex
   agent-pod opencode        # OpenCode
-  agent-pod cursor          # Cursor Agent
+  agent-pod agent           # Cursor Agent (agent CLI)
+  agent-pod cursor          # Cursor Agent (cursor-agent alias)
   agent-pod shell           # a plain shell in the sandbox
 EOF

@@ -122,7 +122,7 @@ nonnegative_integer() {
 }
 
 builtin_agents() {
-  printf '%s\n' "claude codex opencode cursor"
+  printf '%s\n' "claude codex opencode cursor agent"
 }
 
 # Backward-compatible alias used in prompts and help text.
@@ -139,7 +139,7 @@ valid_agent_id() {
 
 is_builtin_agent() {
   case "$1" in
-    claude|codex|opencode|cursor) return 0;;
+    claude|codex|opencode|cursor|agent) return 0;;
     *) return 1;;
   esac
 }
@@ -154,7 +154,8 @@ agent_label() {
     claude) printf '%s\n' "Claude Code";;
     codex) printf '%s\n' "OpenAI Codex";;
     opencode) printf '%s\n' "OpenCode";;
-    cursor) printf '%s\n' "Cursor Agent";;
+    cursor) printf '%s\n' "Cursor Agent (cursor-agent alias)";;
+    agent) printf '%s\n' "Cursor Agent";;
     *) printf '%s\n' "$agent";;
   esac
 }
@@ -207,6 +208,7 @@ resolve_agent_launch() {
     codex)    BIN="codex";        YOLO=(--dangerously-bypass-approvals-and-sandbox);;
     opencode) BIN="opencode";     YOLO=();;
     cursor)   BIN="cursor-agent"; YOLO=(--force);;
+    agent)    BIN="agent";        YOLO=(--force);;
     shell)    BIN="bash";         YOLO=(); return 0;;
     *)
       key="$(agent_env_key "$agent")"
@@ -224,7 +226,7 @@ resolve_agent_launch() {
   case "$agent" in
     claude) truthy "$(config_value AGENT_POD_CLAUDE_AUTO_FLAGS 1)" || YOLO=();;
     codex) truthy "$(config_value AGENT_POD_CODEX_AUTO_FLAGS 1)" || YOLO=();;
-    cursor) truthy "$(config_value AGENT_POD_CURSOR_AUTO_FLAGS 1)" || YOLO=();;
+    cursor|agent) truthy "$(config_value AGENT_POD_CURSOR_AUTO_FLAGS 1)" || YOLO=();;
   esac
 }
 
@@ -746,7 +748,7 @@ EOF
 
   upsert_env_var "$env_file" AGENT_POD_OPENCODE_AUTO_FLAGS 0
 
-  if agent_in_list cursor $chosen_agents; then
+  if agent_in_list cursor $chosen_agents || agent_in_list agent $chosen_agents; then
     if prompt_yes_no "Use Cursor Agent autonomous flag (--force)?" "yes"; then
       upsert_env_var "$env_file" AGENT_POD_CURSOR_AUTO_FLAGS 1
     else
@@ -868,7 +870,8 @@ Agents (built-in):
   claude     Claude Code      (claude; optional --dangerously-skip-permissions)
   codex      OpenAI Codex     (codex; optional --dangerously-bypass-approvals-and-sandbox)
   opencode   OpenCode         (opencode)
-  cursor     Cursor Agent     (cursor-agent; optional --force)
+  agent      Cursor Agent     (agent; optional --force)
+  cursor     Cursor Agent     (cursor-agent alias; optional --force)
 
 Custom agents:
   agent-pod agent-add <name> --bin <cli> [--flags "<flags>"] [--npm <package>]

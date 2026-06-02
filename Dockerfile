@@ -83,14 +83,17 @@ RUN echo "$CACHEBUST" >/dev/null; \
 RUN npm cache clean --force
 
 # Cursor Agent ships its own installer/runtime rather than an npm package.
-# Install it as root, relocate the runtime to /opt, and expose a global symlink
+# Install it as root, relocate the runtime to /opt, and expose global symlinks
 # so it works for the dynamic runtime user (whose HOME is bind-mounted).
+# The user-facing CLI is `agent`; `cursor-agent` is kept as a backward-compat alias.
 RUN echo "$CACHEBUST" >/dev/null; \
     if [ "$INSTALL_CURSOR" = "1" ]; then \
       curl https://cursor.com/install -fsS | bash \
       && mv /root/.local/share/cursor-agent /opt/cursor-agent \
-      && ln -sf "$(find /opt/cursor-agent -type f -name cursor-agent | head -n1)" \
-          /usr/local/bin/cursor-agent \
+      && _bin="$(find /opt/cursor-agent -type f \( -name agent -o -name cursor-agent \) | head -n1)" \
+      && [ -n "$_bin" ] || _bin="$(find /opt/cursor-agent -maxdepth 3 -type f -perm /111 | head -n1)" \
+      && ln -sf "$_bin" /usr/local/bin/agent \
+      && ln -sf /usr/local/bin/agent /usr/local/bin/cursor-agent \
       && chmod -R a+rX /opt/cursor-agent \
       && rm -rf /root/.local /root/.cursor; \
     fi
