@@ -1215,7 +1215,7 @@ else
     || die "Unknown agent '$AGENT'. Run: agent-pod agents"
   ENABLED_AGENTS="$(supported_agents)"
   agent_in_list "$AGENT" $ENABLED_AGENTS \
-    || die "'$AGENT' is not enabled. Add it with: agent-pod agent-add $AGENT && agent-pod install-image"
+    || die "'$AGENT' is not enabled. Add it with: agent-pod agent-add $AGENT && agent-pod update-image"
   resolve_agent_launch "$AGENT"
 fi
 
