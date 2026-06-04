@@ -105,6 +105,13 @@ the `ovld protocol` commands the agents run (the permission prompt is auto-accep
 because the setup runs non-interactively), so agents launched via AgentPod can drive
 Overlord tickets without stopping for permission prompts.
 
+Regardless of the install-time step, every time you launch Claude or Codex the
+launcher also runs the idempotent `ovld setup <agent>` inside the pod (when `ovld`
+is present), registering the Overlord plugin in the pod's HOME before the agent
+starts. This guarantees `overlord:*` skills resolve in a fresh session — the
+host-side `ovld launch` cannot write into the pod's HOME, so the install has to
+happen in-pod.
+
 `agent-pod setup` creates or updates `~/.agent-pod/.agent-pod.env` — a single
 config file that lives with the CLI, not in whatever directory you run from —
 asks which agent CLIs AgentPod should support, invites you to add custom agents

@@ -1336,11 +1336,30 @@ CMD=("$BIN")
 [ ${#YOLO[@]} -gt 0 ] && CMD+=("${YOLO[@]}")
 [ $# -gt 0 ] && CMD+=("$@")
 
+# Register the Overlord plugin inside the pod before launching the agent.
+# `ovld launch` runs on the HOST and cannot write into the pod's HOME, so the
+# plugin install must happen here, in-container, as the agent's own user/HOME.
+# `ovld setup <agent>` installs via the agent's plugin CLI and is idempotent, so
+# it is safe to run on every start. Output is sent to stderr to keep the agent's
+# stdout clean for non-interactive (`-p`/`exec`) captures. Only built-in agents
+# with an Overlord plugin have a setup target.
+OVLD_SETUP_TARGET=""
+case "$AGENT" in
+  claude) OVLD_SETUP_TARGET=claude;;
+  codex)  OVLD_SETUP_TARGET=codex;;
+esac
+BOOTSTRAP=""
+if [ -n "$OVLD_SETUP_TARGET" ]; then
+  BOOTSTRAP="if command -v ovld >/dev/null 2>&1; then ovld setup $OVLD_SETUP_TARGET >&2 || true; fi; "
+fi
+
 # Claude Code's Bun-built Linux arm64 binary can bus-error when Docker starts
 # it directly as the container command. Launching through bash preserves argv
-# while matching the stable `agent-pod shell -lc 'claude ...'` path.
-if [ "$AGENT" = "claude" ]; then
-  CMD=(bash -lc 'exec "$@"' agent-pod-exec "${CMD[@]}")
+# while matching the stable `agent-pod shell -lc 'claude ...'` path. Wrapping in
+# bash also gives us a place to run the Overlord bootstrap before exec'ing the
+# agent, so any agent with a bootstrap step takes the same path.
+if [ "$AGENT" = "claude" ] || [ -n "$BOOTSTRAP" ]; then
+  CMD=(bash -lc "${BOOTSTRAP}exec \"\$@\"" agent-pod-exec "${CMD[@]}")
 fi
 
 info "agent-pod: running '$AGENT' in $PWD"
