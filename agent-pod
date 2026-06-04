@@ -1336,6 +1336,13 @@ CMD=("$BIN")
 [ ${#YOLO[@]} -gt 0 ] && CMD+=("${YOLO[@]}")
 [ $# -gt 0 ] && CMD+=("$@")
 
+# Claude Code's Bun-built Linux arm64 binary can bus-error when Docker starts
+# it directly as the container command. Launching through bash preserves argv
+# while matching the stable `agent-pod shell -lc 'claude ...'` path.
+if [ "$AGENT" = "claude" ]; then
+  CMD=(bash -lc 'exec "$@"' agent-pod-exec "${CMD[@]}")
+fi
+
 info "agent-pod: running '$AGENT' in $PWD"
 info "  state: $STATE_DIR"
 

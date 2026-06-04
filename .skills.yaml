@@ -1,0 +1,6 @@
+sources:
+  - name: "local"
+    kind: "local"
+install_path: ".claude/skills"
+skills:
+  - slug: "changelog"
