@@ -839,6 +839,41 @@ offer_image_build() {
   fi
 }
 
+run_stop() {
+  command -v docker >/dev/null 2>&1 || die "Docker is not installed or not on PATH."
+  docker info >/dev/null 2>&1       || die "Docker daemon is not running. Start Docker and retry."
+
+  BASE_FILTER=(--filter "label=$MANAGED_LABEL")
+
+  if [ $# -eq 0 ]; then
+    containers="$(docker ps -q "${BASE_FILTER[@]}")"
+    if [ -z "$containers" ]; then
+      info "No running agent-pod containers found."
+      return 0
+    fi
+    count="$(printf '%s\n' "$containers" | wc -l | tr -d ' ')"
+    info "Stopping $count agent-pod container(s)..."
+    # shellcheck disable=SC2086
+    docker stop $containers
+    ok "Done."
+  else
+    stopped_any=0
+    for agent in "$@"; do
+      containers="$(docker ps -q "${BASE_FILTER[@]}" --filter "label=com.agent-pod.agent=$agent")"
+      if [ -z "$containers" ]; then
+        warn "No running pod for agent '$agent'."
+        continue
+      fi
+      info "Stopping pod for '$agent'..."
+      # shellcheck disable=SC2086
+      docker stop $containers
+      ok "Stopped '$agent'."
+      stopped_any=1
+    done
+    [ "$stopped_any" -eq 1 ] || warn "No pods were stopped."
+  fi
+}
+
 run_network() {
   [ $# -le 1 ] || die "Usage: agent-pod network [<name>|off|status]"
   current="$(config_value AGENT_POD_DOCKER_NETWORK "")"
@@ -1126,6 +1161,8 @@ Usage:
   agent-pod edit-env             Open the active env file in your editor
   agent-pod install-image        Build the Docker image used by agent-pod
   agent-pod update-image         Refresh CLIs and packages in the Docker image
+  agent-pod start                Alias for update-image (re-pull image after prune)
+  agent-pod stop [agent...]      Stop running agent-pod container(s)
   agent-pod prune [hours]        Remove stopped AgentPod containers
   agent-pod update               Update agent-pod-cli to the latest version
   agent-pod uninstall            Remove the Docker image and ~/.agent-pod state
@@ -1195,7 +1232,8 @@ case "$1" in
   protocol) shift; run_protocol "$@"; exit 0;;
   edit-env) run_edit_env; exit 0;;
   update) run_update; exit 0;;
-  update-image) shift; run_update_image "$@"; exit 0;;
+  start|update-image) shift; run_update_image "$@"; exit 0;;
+  stop) shift; run_stop "$@"; exit 0;;
   prune) shift; run_prune "$@"; exit 0;;
   install-image)
     exec "$LAUNCHER_DIR/install.sh"

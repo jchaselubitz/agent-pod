@@ -98,6 +98,14 @@ agent-pod setup          # create ~/.agent-pod/.agent-pod.env (auto-runs on inst
 agent-pod install-image  # build the Docker image with the agent CLIs
 ```
 
+The package installs two commands: `agent-pod` and the shorter alias `agp`.
+They are identical — use whichever you prefer:
+
+```bash
+agp claude
+agp codex
+```
+
 If `OVERLORD_AGENT_TOKEN` is set in your environment or `~/.agent-pod/.agent-pod.env`,
 `agent-pod install-image` also runs `ovld setup all` once for each agent's state
 directory after the build. That installs the Overlord connectors and pre-approves
@@ -220,16 +228,19 @@ If you installed with npm, this is already done. If you cloned from source, the
 
 ```bash
 # zsh
-echo "alias agent-pod=\"$PWD/agent-pod\"" >> ~/.zshrc && source ~/.zshrc
+echo "alias agent-pod=\"$PWD/agent-pod\"" >> ~/.zshrc
+echo "alias agp=\"$PWD/agent-pod\""       >> ~/.zshrc && source ~/.zshrc
 
 # bash
-echo "alias agent-pod=\"$PWD/agent-pod\"" >> ~/.bashrc && source ~/.bashrc
+echo "alias agent-pod=\"$PWD/agent-pod\"" >> ~/.bashrc
+echo "alias agp=\"$PWD/agent-pod\""       >> ~/.bashrc && source ~/.bashrc
 ```
 
-Or symlink it into a directory already on your PATH:
+Or symlink both names into a directory already on your PATH:
 
 ```bash
 ln -s "$PWD/agent-pod" /usr/local/bin/agent-pod
+ln -s "$PWD/agent-pod" /usr/local/bin/agp
 ```
 
 You can also install a source checkout globally with npm:
@@ -270,6 +281,13 @@ agent-pod opencode          # OpenCode
 agent-pod cursor            # Cursor Agent
 agent-pod gemini            # custom agent (if configured)
 agent-pod shell             # a plain shell inside the sandbox
+```
+
+`agp` is a built-in short alias — both commands are identical:
+
+```bash
+agp claude
+agp shell
 ```
 
 Manage supported agents later with:

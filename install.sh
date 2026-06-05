@@ -411,8 +411,9 @@ cat <<EOF
 
 $(ok "Done.") Next steps:
 
-  # Put the launcher on your PATH (or alias it):
+  # Put the launcher on your PATH (or alias both commands):
   alias agent-pod='$DIR/agent-pod'
+  alias agp='$DIR/agent-pod'        # short alias (same command)
 
   # Then, from any project directory:
   agent-pod claude          # Claude Code
@@ -421,4 +422,7 @@ $(ok "Done.") Next steps:
   agent-pod agent           # Cursor Agent (agent CLI)
   agent-pod cursor          # Cursor Agent (agent alias)
   agent-pod shell           # a plain shell in the sandbox
+
+  # Or use the short alias:
+  agp claude
 EOF
