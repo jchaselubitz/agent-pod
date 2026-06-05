@@ -297,7 +297,7 @@ agent-pod agents
 agent-pod agent-add cursor
 agent-pod agent-add gemini --bin gemini --flags "--yolo" --npm @google/gemini-cli
 agent-pod agent-remove opencode
-agent-pod install-image      # rebuild after changing supported agents
+agent-pod update-image      # rebuild after changing supported agents
 ```
 
 ## Custom agents and harnesses
@@ -380,7 +380,7 @@ get it there:
 After changing packages or agent definitions, rebuild:
 
 ```bash
-agent-pod install-image
+agent-pod update-image
 ```
 
 ### State and auth

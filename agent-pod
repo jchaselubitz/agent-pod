@@ -570,7 +570,7 @@ run_agent_add() {
 
   upsert_env_var "$env_file" AGENT_POD_AGENTS "$(agents_csv "$next_agents")"
   ok "Supported agents: $next_agents"
-  info "Rebuild the image to install newly enabled CLIs: agent-pod install-image"
+  info "Rebuild the image to install newly enabled CLIs: agent-pod update-image"
 }
 
 run_agent_remove() {
@@ -589,7 +589,7 @@ run_agent_remove() {
   env_file="$(ensure_config_file)"
   upsert_env_var "$env_file" AGENT_POD_AGENTS "$(agents_csv "$next_agents")"
   ok "Supported agents: $next_agents"
-  info "Rebuild the image to remove disabled CLIs: agent-pod install-image"
+  info "Rebuild the image to remove disabled CLIs: agent-pod update-image"
 }
 
 package_config_key() {
@@ -1007,7 +1007,7 @@ Examples:
   agent-pod package-add --npm pnpm typescript
   agent-pod package-add --apt python3 python3-pip build-essential
   agent-pod package-add --apt postgresql-client       # psql, for DB work
-  agent-pod install-image                              # rebuild to install them
+  agent-pod update-image                              # rebuild to install them
 
 Remove / list:
   agent-pod package-remove --npm typescript
@@ -1019,7 +1019,7 @@ Config keys written to ~/.agent-pod/.agent-pod.env:
   AGENT_POD_APT_PACKAGES="python3 build-essential"  space-separated Debian packages
 
 Rebuild to apply:
-  agent-pod install-image          builds/applies package changes
+  agent-pod update-image          builds/applies package changes
   agent-pod update-image           refresh installed CLIs/packages, keep auth
 
 Verify a tool is present in a fresh pod:
