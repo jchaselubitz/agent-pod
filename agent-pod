@@ -6,9 +6,9 @@
 # Supported agents: claude, codex, opencode, cursor (built-in), plus any custom
 # agents you define in ~/.agent-pod/.agent-pod.env.
 #
-# Only $PWD is mounted in. Per-agent auth/history is persisted on the host
-# under ~/.agent-pod/<agent>. Everything else (your home dir, SSH keys, other
-# projects) stays invisible to the agent.
+# Only $PWD is mounted in by default. Per-agent auth/history is persisted on the
+# host under ~/.agent-pod/<agent>. Everything else (your home dir, SSH keys,
+# other projects) stays invisible to the agent unless explicitly allowlisted.
 #
 # NOTE: outbound network access inside the container is NOT restricted.
 
@@ -674,6 +674,97 @@ run_package_remove() {
   info "Rebuild the image to apply the change: agent-pod install-image"
 }
 
+path_in_csv_list() {
+  local needle="$1"
+  local list="$2"
+  local existing
+  OLDIFS="$IFS"; IFS=','
+  for existing in $list; do
+    IFS="$OLDIFS"
+    [ "$existing" = "$needle" ] && return 0
+    OLDIFS="$IFS"; IFS=','
+  done
+  IFS="$OLDIFS"
+  return 1
+}
+
+valid_allowed_path() {
+  case "$1" in
+    /*) ;;
+    *) return 1;;
+  esac
+  case "$1" in
+    *","*) return 1;;
+  esac
+  [ -e "$1" ] || return 1
+  return 0
+}
+
+run_file_access() {
+  [ $# -ge 1 ] || set -- list
+  current="$(config_value AGENT_POD_ALLOWED_PATHS "")"
+  case "$1" in
+    list|status)
+      info "Extra host paths mounted into NEW pods:"
+      if [ -n "$current" ]; then
+        OLDIFS="$IFS"; IFS=','
+        for path in $current; do
+          IFS="$OLDIFS"
+          printf '  %s\n' "$path"
+          OLDIFS="$IFS"; IFS=','
+        done
+        IFS="$OLDIFS"
+      else
+        printf '  (none)\n'
+      fi
+      info "Config: ${ENV_FILE:-$CONFIG_ENV_FILE}"
+      ;;
+    add|allow)
+      shift
+      [ $# -ge 1 ] || die "Usage: agent-pod file-access add <absolute-path> [absolute-path...]"
+      next="$current"
+      for path in "$@"; do
+        valid_allowed_path "$path" \
+          || die "Invalid allowed path '$path'. Use an existing absolute path without commas."
+        if ! path_in_csv_list "$path" "$next"; then
+          next="${next:+$next,}$path"
+        fi
+      done
+      env_file="$(ensure_config_file)"
+      upsert_env_var "$env_file" AGENT_POD_ALLOWED_PATHS "$next"
+      ok "Allowed paths for future pods:"
+      AGENT_POD_ALLOWED_PATHS="$next" run_file_access list
+      ;;
+    remove|deny)
+      shift
+      [ $# -ge 1 ] || die "Usage: agent-pod file-access remove <absolute-path> [absolute-path...]"
+      next=""
+      OLDIFS="$IFS"; IFS=','
+      for existing in $current; do
+        IFS="$OLDIFS"
+        remove=0
+        for path in "$@"; do
+          [ "$existing" = "$path" ] && { remove=1; break; }
+        done
+        [ "$remove" -eq 1 ] || next="${next:+$next,}$existing"
+        OLDIFS="$IFS"; IFS=','
+      done
+      IFS="$OLDIFS"
+      env_file="$(ensure_config_file)"
+      upsert_env_var "$env_file" AGENT_POD_ALLOWED_PATHS "$next"
+      ok "Allowed paths for future pods:"
+      AGENT_POD_ALLOWED_PATHS="$next" run_file_access list
+      ;;
+    clear|off|disable)
+      [ $# -eq 1 ] || die "Usage: agent-pod file-access clear"
+      env_file="$(ensure_config_file)"
+      upsert_env_var "$env_file" AGENT_POD_ALLOWED_PATHS ""
+      ok "Extra file access disabled for future pods."
+      ;;
+    *) die "Usage: agent-pod file-access [list|add <path...>|remove <path...>|clear]";;
+  esac
+}
+
 run_docker_access() {
   [ $# -le 1 ] || die "Usage: agent-pod docker-access [on|off|status]"
   current="$(config_value AGENT_POD_DOCKER_ACCESS 0)"
@@ -925,6 +1016,7 @@ rebuild/verify step.
 Topics:
   agent-pod protocol agents     Add a custom agent or harness CLI
   agent-pod protocol packages   Bake apt/npm tools into the sandbox image
+  agent-pod protocol files      Allowlist extra host file paths to mount
   agent-pod protocol docker     Reach other containers (e.g. local Supabase)
   agent-pod protocol skills     Where the packaged agent skills live / install them
   agent-pod protocol help       This overview
@@ -943,6 +1035,7 @@ Where to run:
 Inspect current state:
   agent-pod agents              Enabled agents (with bin/flags/npm)
   agent-pod packages            Custom apt/npm packages baked into the image
+  agent-pod file-access list     Extra host paths mounted into new pods
   agent-pod docker-access status
   agent-pod network status
 EOF
@@ -1024,6 +1117,40 @@ Rebuild to apply:
 
 Verify a tool is present in a fresh pod:
   agent-pod shell <tool> --version     e.g. agent-pod shell python3 --version
+EOF
+}
+
+protocol_files() {
+  cat <<'EOF'
+agent-pod protocol files — allowlist extra host file paths
+
+By default a pod can only see the current project directory plus its persisted
+agent HOME. Use file access when the user wants an agent launched in one repo to
+read, reference, or modify another specific repo/file without exposing all of
+the host or mounting the Docker socket.
+
+Programmatic one-launch usage:
+  AGENT_POD_ALLOWED_PATHS=/absolute/path/to/other-repo agent-pod codex
+  AGENT_POD_ALLOWED_PATHS=/repo/a,/repo/b agent-pod claude
+
+Persisted config for future launches:
+  agent-pod file-access add /absolute/path/to/other-repo
+  agent-pod file-access list
+  agent-pod file-access remove /absolute/path/to/other-repo
+  agent-pod file-access clear
+
+Config key written to ~/.agent-pod/.agent-pod.env:
+  AGENT_POD_ALLOWED_PATHS=/repo/a,/repo/b     comma-separated existing absolute paths
+
+How it mounts:
+  • Each allowed path is bind-mounted read/write at the same absolute path
+    inside the pod.
+  • Paths must already exist, must be absolute, and cannot contain commas.
+  • Settings apply only to NEW pods; restart the pod after changing them.
+  • Keep the list narrow. Every allowed path is editable by the agent process.
+
+Verify in a fresh pod:
+  agent-pod shell test -e /absolute/path/to/other-repo
 EOF
 }
 
@@ -1129,6 +1256,7 @@ run_protocol() {
     help|-h|--help|"") protocol_overview;;
     agents|agent|harness|harnesses) protocol_agents;;
     packages|package|deps|dependencies) protocol_packages;;
+    files|file|file-access|paths|mounts|allowlist) protocol_files;;
     docker|docker-access|containers|network|networking|supabase) protocol_docker;;
     skills|skill) protocol_skills "$@";;
     *) die "Unknown protocol topic '$topic'. Run: agent-pod protocol help";;
@@ -1152,12 +1280,14 @@ Usage:
                                   Add custom packages to bake into the image
   agent-pod package-remove [--npm|--apt] <pkg...>
                                   Remove custom packages from the image
+  agent-pod file-access [list|add|remove|clear]
+                                  Allowlist extra host paths for new pods
   agent-pod docker-access [on|off|status]
                                   Show or toggle host Docker socket mounting
   agent-pod network [<name>|off|status]
                                   Attach launched pods to a Docker network
   agent-pod protocol [topic]     Agent-facing help for configuring the sandbox
-                                  (topics: agents, packages, docker, skills)
+                                  (topics: agents, packages, files, docker, skills)
   agent-pod edit-env             Open the active env file in your editor
   agent-pod install-image        Build the Docker image used by agent-pod
   agent-pod update-image         Refresh CLIs and packages in the Docker image
@@ -1183,9 +1313,10 @@ Anything after the agent name is passed straight through to the CLI, e.g.
   agent-pod claude -p "summarize this repo"
   agent-pod codex exec "run the tests"
   agent-pod package-add --npm pnpm eslint@9
+  agent-pod file-access add /absolute/path/to/other-repo
   agent-pod install-image
 
-Configuring the sandbox (custom agents, packages, Docker/Supabase access):
+Configuring the sandbox (custom agents, packages, files, Docker/Supabase access):
   Easiest path — ask your coding agent to do it. Tell it to read
   'agent-pod protocol help' and configure what you need, e.g.
     "Check 'agent-pod protocol help', add the gemini CLI, install psql, and
@@ -1193,7 +1324,7 @@ Configuring the sandbox (custom agents, packages, Docker/Supabase access):
   Or run 'agent-pod protocol help' yourself for the exact commands.
 
 Configuration & environment variables (PORTS, AGENT_POD_ENV_FILE,
-AGENT_POD_AGENTS, AGENT_POD_DOCKER_ACCESS, auth keys, pruning, and more):
+AGENT_POD_AGENTS, AGENT_POD_ALLOWED_PATHS, auth keys, pruning, and more):
   agent-pod setup        Guided setup of ~/.agent-pod/.agent-pod.env
   agent-pod edit-env     Open the active env file in your editor
   Full reference: https://github.com/jchaselubitz/agent-pod#readme
@@ -1204,6 +1335,9 @@ into the container automatically.
 
 Only the current directory is mounted in:
   $PWD
+
+Extra allowed paths can be mounted into new pods with:
+  agent-pod file-access add /absolute/path/to/other-repo
 EOF
 }
 
@@ -1215,6 +1349,7 @@ IMAGE="$(config_value AGENT_POD_IMAGE agent-pod)"
 STATE_ROOT="$(config_value AGENT_POD_HOME "$HOME/.agent-pod")"
 PORTS_VALUE="$(config_value PORTS "${PORTS:-}")"
 AGENT_POD_ENV_VALUE="$(config_value AGENT_POD_ENV "${AGENT_POD_ENV:-}")"
+AGENT_POD_ALLOWED_PATHS_VALUE="$(config_value AGENT_POD_ALLOWED_PATHS "${AGENT_POD_ALLOWED_PATHS:-}")"
 
 # ---- argument parsing -----------------------------------------------------
 [ $# -ge 1 ] || { usage; exit 1; }
@@ -1227,6 +1362,7 @@ case "$1" in
   packages) shift; run_packages_list "$@"; exit 0;;
   package-add|add-package) shift; run_package_add "$@"; exit 0;;
   package-remove|remove-package) shift; run_package_remove "$@"; exit 0;;
+  file-access|files|allowlist) shift; run_file_access "$@"; exit 0;;
   docker-access) shift; run_docker_access "$@"; exit 0;;
   network) shift; run_network "$@"; exit 0;;
   protocol) shift; run_protocol "$@"; exit 0;;
@@ -1342,6 +1478,22 @@ if [ -n "$ENV_FILE" ]; then
   ENV_FILE_FLAGS+=(--env-file "$ENV_FILE")
 fi
 
+# ---- optional allowlisted host file access --------------------------------
+FILE_ACCESS_FLAGS=()
+if [ -n "$AGENT_POD_ALLOWED_PATHS_VALUE" ]; then
+  OLDIFS="$IFS"; IFS=','
+  for allowed_path in $AGENT_POD_ALLOWED_PATHS_VALUE; do
+    IFS="$OLDIFS"
+    [ -z "$allowed_path" ] && { OLDIFS="$IFS"; IFS=','; continue; }
+    valid_allowed_path "$allowed_path" \
+      || die "Invalid AGENT_POD_ALLOWED_PATHS entry '$allowed_path'. Use existing absolute paths without commas."
+    FILE_ACCESS_FLAGS+=(-v "$allowed_path:$allowed_path")
+    info "Allowing host path in pod: $allowed_path"
+    OLDIFS="$IFS"; IFS=','
+  done
+  IFS="$OLDIFS"
+fi
+
 # ---- optional host Docker daemon access ----------------------------------
 DOCKER_ACCESS_FLAGS=()
 if truthy "$(config_value AGENT_POD_DOCKER_ACCESS 0)"; then
@@ -1418,6 +1570,7 @@ exec docker run --rm \
   -v "$PWD:$PWD" \
   -w "$PWD" \
   "${PORT_FLAGS[@]}" \
+  "${FILE_ACCESS_FLAGS[@]}" \
   "${DOCKER_ACCESS_FLAGS[@]}" \
   "${NETWORK_FLAGS[@]}" \
   --cap-drop ALL \

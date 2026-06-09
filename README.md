@@ -34,13 +34,14 @@ Just tell your agent something like:
 
 The agent runs `agent-pod protocol help`, reads the exact commands for each
 task, applies them, and rebuilds the image. The protocol command is the
-authoritative, always-current reference for the three things people most often
+authoritative, always-current reference for the things people most often
 need to configure:
 
 ```bash
 agent-pod protocol help        # overview + topic index
 agent-pod protocol agents      # add a custom agent / harness CLI
 agent-pod protocol packages    # bake apt/npm tools into the sandbox image
+agent-pod protocol files       # allowlist extra host file paths to mount
 agent-pod protocol docker      # reach other containers (e.g. local Supabase)
 agent-pod protocol skills      # where the packaged skills live / install them
 ```
@@ -66,6 +67,7 @@ means the agent can touch *anything* your user can. AgentPod narrows that blast
 radius to a single directory:
 
 - Only `$PWD` is mounted into the container, at the same path.
+- Extra host paths are mounted only when explicitly allowlisted.
 - The agent runs as your host UID/GID, so files it creates are owned by you.
 - Linux capabilities are dropped and privilege escalation is disabled.
 - Auth and history persist per-agent on the host, so you log in once.
@@ -144,8 +146,9 @@ cd agent-pod
 `install.sh` asks which agents to support when no `AGENT_POD_AGENTS` setting is
 already configured, asks separately whether to install `ovld` when
 `AGENT_POD_OVERLORD` is unset, builds the `agent-pod` image with those CLIs, and
-then prints the installed version of each selected agent CLI plus `ovld` when
-the Overlord manager package is installed. A successful build ends with:
+then prints the installed version of each selected agent CLI, custom harness,
+and configured extra apt/npm package, plus `ovld` when the Overlord manager
+package is installed. A successful build ends with:
 
 ```
 Image 'agent-pod' built.
@@ -154,7 +157,10 @@ Installed versions:
   codex:       ...
   opencode:    ...
   ovld:        ...  # when AGENT_POD_OVERLORD=1
-  agent:        ...
+  agent:       ...
+  my-harness:  ...  # when configured
+  npm:pnpm:    ...  # when configured
+  apt:python3: ...  # when configured
 
 Done. Next steps:
   ...
@@ -492,6 +498,34 @@ To forward extra variables from your current shell without an env-file:
 AWS_PROFILE=dev AGENT_POD_ENV=AWS_PROFILE,MY_API_URL agent-pod claude
 ```
 
+### Allowing access to another repo or file
+
+By default a pod sees only the directory where you launch it. To launch an
+agent in one repo while letting it read or edit another specific repo/file,
+allowlist that path. Each allowlisted path is bind-mounted read/write at the
+same absolute path inside new pods.
+
+For a single launch:
+
+```bash
+AGENT_POD_ALLOWED_PATHS=/Users/me/src/shared-lib agent-pod codex
+AGENT_POD_ALLOWED_PATHS=/repo/a,/repo/b agent-pod claude
+```
+
+To persist access for future launches:
+
+```bash
+agent-pod file-access add /Users/me/src/shared-lib
+agent-pod file-access list
+agent-pod file-access remove /Users/me/src/shared-lib
+agent-pod file-access clear
+```
+
+Paths must already exist, must be absolute, and cannot contain commas. The list
+is intentionally narrow: every allowed path is editable by the agent process.
+Changes apply only to new pods, so restart `agent-pod` after editing the
+allowlist.
+
 ### Exposing dev-server ports
 
 By default nothing is published. Expose ports with `PORTS`:
@@ -578,6 +612,7 @@ agent-pod network supabase_network_<project>
 |----------|---------|---------|
 | `PORTS` | _(none)_ | Comma-separated ports to publish on localhost |
 | `AGENT_POD_ENV` | _(none)_ | Comma- or space-separated host env var names to forward |
+| `AGENT_POD_ALLOWED_PATHS` | _(none)_ | Comma-separated existing absolute host paths to bind-mount read/write into new pods |
 | `AGENT_POD_ENV_FILE` | `~/.agent-pod/.agent-pod.env`, then legacy project/launcher files | Docker env-file to load into the container |
 | `AGENT_POD_YOLO` | `1` | Set to `0` to drop the auto-approve flags |
 | `AGENT_POD_AGENTS` | `claude,codex,opencode,cursor` | Comma- or space-separated agents to build and run (built-in + custom) |
@@ -626,6 +661,7 @@ docker run --rm -i [-t] \
   [--env-file ~/.agent-pod/.agent-pod.env] \
   -v ~/.agent-pod/<agent>:/home/agent-pod \   # persisted auth + history
   -v "$PWD:$PWD" -w "$PWD" \                   # only the current project
+  [-v /allowed/path:/allowed/path] \            # explicit extra file access
   [-v /var/run/docker.sock:/var/run/docker.sock] \
   --cap-drop ALL --security-opt no-new-privileges \
   agent-pod  <cli> <autonomous-flags> [your args]
@@ -668,8 +704,8 @@ From a source checkout, `./uninstall.sh` does the same as `agent-pod uninstall`.
 ## Limitations
 
 - **Network is not sandboxed.** Filesystem isolation only.
-- Symlinks/hardlinks pointing outside `$PWD` are not followed in (only `$PWD` is
-  mounted), but be mindful of what lives inside your project tree.
+- Symlinks/hardlinks pointing outside mounted paths are not followed in, but be
+  mindful of what lives inside your project tree and any allowed paths.
 - Not native Windows — use WSL2.
 - macOS users on the system `/bin/bash` (3.2) should be fine; the scripts avoid
   features that require newer bash.

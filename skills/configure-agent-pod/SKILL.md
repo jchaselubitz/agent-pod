@@ -3,11 +3,11 @@ name: configure-agent-pod
 description: >-
   Configure the AgentPod sandbox for a project: add a custom coding agent or
   harness, bake apt/npm packages into the sandbox image, or give the pod access
-  to other Docker containers (for example a local Supabase stack so migrations
-  can be applied). Use whenever the user asks to set up, extend, or change how
-  agent-pod runs — e.g. "add gemini to agent-pod", "the sandbox is missing
-  python", "let the pod reach my supabase database", "apply migrations from the
-  pod".
+  to extra host file paths or other Docker containers (for example a local
+  Supabase stack so migrations can be applied). Use whenever the user asks to
+  set up, extend, or change how agent-pod runs — e.g. "add gemini to
+  agent-pod", "the sandbox is missing python", "let the pod read another repo",
+  "let the pod reach my supabase database", "apply migrations from the pod".
 ---
 
 # Configuring AgentPod
@@ -28,6 +28,7 @@ the exact commands, the env-file keys they write, and the rebuild/verify step:
 |----------------------------------------------------|----------------------------------|
 | Add a custom agent / harness CLI                   | `agent-pod protocol agents`      |
 | Make sure a tool/library is in the sandbox image   | `agent-pod protocol packages`    |
+| Let the pod read/edit another repo or host path    | `agent-pod protocol files`       |
 | Let the pod reach other containers (e.g. Supabase) | `agent-pod protocol docker`      |
 | Find or install these skills                       | `agent-pod protocol skills`      |
 

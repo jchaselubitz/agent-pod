@@ -165,6 +165,55 @@ merge_package_lists() {
   printf '%s\n' "$merged"
 }
 
+npm_package_name() {
+  case "$1" in
+    @*/*@*) printf '%s\n' "${1%@*}";;
+    @*/*) printf '%s\n' "$1";;
+    *@*) printf '%s\n' "${1%@*}";;
+    *) printf '%s\n' "$1";;
+  esac
+}
+
+apt_package_name() {
+  printf '%s\n' "${1%%=*}"
+}
+
+print_installed_version() {
+  local label="$1"
+  local value="$2"
+  printf '  %-24s %s\n' "$label" "${value:-"(unavailable)"}"
+}
+
+probe_command_version() {
+  local label="$1"
+  local probe="$2"
+  local out
+  out="$(docker run --rm "$IMAGE" sh -lc "timeout 10 $probe </dev/null" 2>/dev/null || true)"
+  print_installed_version "$label" "$out"
+}
+
+probe_npm_package_version() {
+  local spec="$1"
+  local pkg out
+  pkg="$(npm_package_name "$spec")"
+  [ -n "$pkg" ] || return 0
+  out="$(
+    docker run --rm "$IMAGE" sh -lc \
+      "timeout 10 sh -lc 'NPM_ROOT=\$(npm root -g 2>/dev/null); PKG=\"$pkg\" node -e '\''const fs=require(\"fs\"); const path=require(\"path\"); const pkg=process.env.PKG; const root=process.env.NPM_ROOT; if (!pkg || !root) process.exit(0); const file=path.join(root, pkg, \"package.json\"); if (fs.existsSync(file)) process.stdout.write(JSON.parse(fs.readFileSync(file, \"utf8\")).version);'\'' </dev/null'" \
+      2>/dev/null || true
+  )"
+  print_installed_version "npm:$pkg:" "$out"
+}
+
+probe_apt_package_version() {
+  local spec="$1"
+  local pkg out
+  pkg="$(apt_package_name "$spec")"
+  [ -n "$pkg" ] || return 0
+  out="$(docker run --rm "$IMAGE" sh -lc "timeout 10 dpkg-query -W -f='\${Version}' '$pkg' </dev/null" 2>/dev/null || true)"
+  print_installed_version "apt:$pkg:" "$out"
+}
+
 agent_in_list() {
   local needle agent
   needle="$1"; shift
@@ -336,22 +385,31 @@ fi
 # block, so each probe is bounded by a timeout and never aborts the script).
 info "Installed versions:"
 PROBES=()
-[ "$INSTALL_CLAUDE" = "1" ] && PROBES+=("claude --version")
-[ "$INSTALL_CODEX" = "1" ] && PROBES+=("codex --version")
-[ "$INSTALL_OPENCODE" = "1" ] && PROBES+=("opencode --version")
-[ "$INSTALL_OVERLORD" = "1" ] && PROBES+=("ovld version")
-[ "$INSTALL_CURSOR" = "1" ] && PROBES+=("agent --version")
+[ "$INSTALL_CLAUDE" = "1" ] && PROBES+=("claude:|claude --version")
+[ "$INSTALL_CODEX" = "1" ] && PROBES+=("codex:|codex --version")
+[ "$INSTALL_OPENCODE" = "1" ] && PROBES+=("opencode:|opencode --version")
+[ "$INSTALL_OVERLORD" = "1" ] && PROBES+=("ovld:|ovld version")
+[ "$INSTALL_CURSOR" = "1" ] && PROBES+=("agent:|agent --version")
 for probe in "${PROBES[@]}"; do
-  out="$(docker run --rm "$IMAGE" sh -lc "timeout 10 $probe </dev/null" 2>/dev/null || true)"
-  printf '  %-12s %s\n' "${probe%% *}:" "${out:-"(unavailable)"}"
+  probe_command_version "${probe%%|*}" "${probe#*|}"
 done
 for agent in $ENABLED_AGENTS; do
   is_builtin_agent "$agent" && continue
   key="$(agent_env_key "$agent")"
   bin="$(dotenv_get "AGENT_POD_${key}_BIN" "$CONFIG_ENV_FILE" 2>/dev/null || true)"
   [ -n "$bin" ] || continue
-  out="$(docker run --rm "$IMAGE" sh -lc "timeout 10 $bin --version </dev/null" 2>/dev/null || true)"
-  printf '  %-12s %s\n' "$bin:" "${out:-"(unavailable)"}"
+  if [ "$bin" = "$agent" ]; then
+    label="$agent:"
+  else
+    label="$agent ($bin):"
+  fi
+  probe_command_version "$label" "$bin --version"
+done
+for pkg in $EXTRA_NPM_PACKAGES; do
+  probe_npm_package_version "$pkg"
+done
+for pkg in $EXTRA_APT_PACKAGES; do
+  probe_apt_package_version "$pkg"
 done
 
 # ---------------------------------------------------------------------------
