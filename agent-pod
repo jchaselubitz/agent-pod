@@ -871,17 +871,32 @@ EOF
   fi
 
   if [ "$use_overlord" = "1" ] && prompt_yes_no "Do you use Overlord to manage agents?" "yes"; then
-    current_overlord_token="$(dotenv_get OVERLORD_AGENT_TOKEN "$env_file" 2>/dev/null || true)"
-    if [ -n "$current_overlord_token" ]; then
-      token_prompt="Overlord agent token [leave blank to keep existing]:"
+    current_backend_url="$(dotenv_get OVERLORD_BACKEND_URL "$env_file" 2>/dev/null || true)"
+    [ -z "$current_backend_url" ] && current_backend_url="$(dotenv_get OVERLORD_URL "$env_file" 2>/dev/null || true)"
+    if [ -n "$current_backend_url" ]; then
+      backend_prompt="Overlord backend URL [leave blank to keep existing, default http://127.0.0.1:4310]:"
     else
-      token_prompt="Overlord agent token [leave blank to skip]:"
+      backend_prompt="Overlord backend URL [default http://127.0.0.1:4310]:"
+    fi
+    backend_url="$(prompt_text "$backend_prompt" || true)"
+    if [ -n "$backend_url" ]; then
+      upsert_env_var "$env_file" OVERLORD_BACKEND_URL "$backend_url"
+    elif [ -z "$current_backend_url" ]; then
+      upsert_env_var "$env_file" OVERLORD_BACKEND_URL "http://127.0.0.1:4310"
+    fi
+
+    current_overlord_token="$(dotenv_get OVERLORD_USER_TOKEN "$env_file" 2>/dev/null || true)"
+    [ -z "$current_overlord_token" ] && current_overlord_token="$(dotenv_get OVERLORD_AGENT_TOKEN "$env_file" 2>/dev/null || true)"
+    if [ -n "$current_overlord_token" ]; then
+      token_prompt="Overlord user token [leave blank to keep existing]:"
+    else
+      token_prompt="Overlord user token (Settings > Tokens in Desktop) [leave blank to skip]:"
     fi
     overlord_token="$(prompt_text "$token_prompt" || true)"
     if [ -n "$overlord_token" ]; then
-      upsert_env_var "$env_file" OVERLORD_AGENT_TOKEN "$overlord_token"
+      upsert_env_var "$env_file" OVERLORD_USER_TOKEN "$overlord_token"
     elif [ -z "$current_overlord_token" ]; then
-      upsert_env_var "$env_file" OVERLORD_AGENT_TOKEN ""
+      upsert_env_var "$env_file" OVERLORD_USER_TOKEN ""
     fi
   elif [ "$use_overlord" = "1" ]; then
     info "You should: https://www.ovld.ai"
@@ -1448,9 +1463,20 @@ for v in \
   GEMINI_API_KEY GOOGLE_API_KEY OPENROUTER_API_KEY GROQ_API_KEY \
   XAI_API_KEY DEEPSEEK_API_KEY MISTRAL_API_KEY \
   GITHUB_TOKEN GH_TOKEN \
-  OVERLORD_URL OVERLORD_AGENT_TOKEN OVERLORD_DEVICE_FINGERPRINT; do
+  OVERLORD_BACKEND_URL OVERLORD_USER_TOKEN OVLD_USER_TOKEN \
+  OVERLORD_URL OVERLORD_AGENT_TOKEN; do
   [ -n "${!v:-}" ] && ENV_FLAGS+=(-e "$v")
 done
+
+# Map legacy Overlord env names to open-overlord names when only the old keys
+# are present in the config file (docker --env-file does not rename keys).
+overlord_user_token="$(config_value OVERLORD_USER_TOKEN "")"
+[ -z "$overlord_user_token" ] && overlord_user_token="$(config_value OVERLORD_AGENT_TOKEN "")"
+[ -n "$overlord_user_token" ] && ENV_FLAGS+=(-e "OVERLORD_USER_TOKEN=$overlord_user_token")
+
+overlord_backend_url="$(config_value OVERLORD_BACKEND_URL "")"
+[ -z "$overlord_backend_url" ] && overlord_backend_url="$(config_value OVERLORD_URL "")"
+[ -n "$overlord_backend_url" ] && ENV_FLAGS+=(-e "OVERLORD_BACKEND_URL=$overlord_backend_url")
 
 # Forward any extra host variables requested for this project/session.
 # Accept commas or spaces so both `FOO,BAR` and `FOO BAR` work.
@@ -1529,10 +1555,10 @@ CMD=("$BIN")
 # Register the Overlord plugin inside the pod before launching the agent.
 # `ovld launch` runs on the HOST and cannot write into the pod's HOME, so the
 # plugin install must happen here, in-container, as the agent's own user/HOME.
-# `ovld setup <agent>` installs via the agent's plugin CLI and is idempotent, so
-# it is safe to run on every start. Output is sent to stderr to keep the agent's
-# stdout clean for non-interactive (`-p`/`exec`) captures. Only built-in agents
-# with an Overlord plugin have a setup target.
+# `ovld agent-setup <agent>` installs via the agent's plugin CLI and is
+# idempotent, so it is safe to run on every start. Output is sent to stderr to
+# keep the agent's stdout clean for non-interactive (`-p`/`exec`) captures.
+# Only built-in agents with an Overlord plugin have a setup target.
 OVLD_SETUP_TARGET=""
 case "$AGENT" in
   claude) OVLD_SETUP_TARGET=claude;;
@@ -1540,7 +1566,7 @@ case "$AGENT" in
 esac
 BOOTSTRAP=""
 if [ -n "$OVLD_SETUP_TARGET" ]; then
-  BOOTSTRAP="if command -v ovld >/dev/null 2>&1; then ovld setup $OVLD_SETUP_TARGET >&2 || true; fi; "
+  BOOTSTRAP="if command -v ovld >/dev/null 2>&1; then ovld agent-setup $OVLD_SETUP_TARGET >&2 || true; fi; "
 fi
 
 # Claude Code's Bun-built Linux arm64 binary can bus-error when Docker starts

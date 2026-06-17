@@ -108,27 +108,28 @@ agp claude
 agp codex
 ```
 
-If `OVERLORD_AGENT_TOKEN` is set in your environment or `~/.agent-pod/.agent-pod.env`,
-`agent-pod install-image` also runs `ovld setup all` once for each agent's state
-directory after the build. That installs the Overlord connectors and pre-approves
-the `ovld protocol` commands the agents run (the permission prompt is auto-accepted
-because the setup runs non-interactively), so agents launched via AgentPod can drive
+If `OVERLORD_USER_TOKEN` and `OVERLORD_BACKEND_URL` are set in your environment or
+`~/.agent-pod/.agent-pod.env`, `agent-pod install-image` also runs
+`ovld agent-setup all` once for each agent's state directory after the build.
+That installs the Overlord connectors and pre-approves the `ovld protocol`
+commands the agents run (the permission prompt is auto-accepted because the
+setup runs non-interactively), so agents launched via AgentPod can drive
 Overlord tickets without stopping for permission prompts.
 
 Regardless of the install-time step, every time you launch Claude or Codex the
-launcher also runs the idempotent `ovld setup <agent>` inside the pod (when `ovld`
-is present), registering the Overlord plugin in the pod's HOME before the agent
-starts. This guarantees `overlord:*` skills resolve in a fresh session — the
-host-side `ovld launch` cannot write into the pod's HOME, so the install has to
-happen in-pod.
+launcher also runs the idempotent `ovld agent-setup <agent>` inside the pod
+(when `ovld` is present), registering the Overlord plugin in the pod's HOME
+before the agent starts. This guarantees `overlord:*` skills resolve in a fresh
+session — the host-side `ovld launch` cannot write into the pod's HOME, so the
+install has to happen in-pod.
 
 `agent-pod setup` creates or updates `~/.agent-pod/.agent-pod.env` — a single
 config file that lives with the CLI, not in whatever directory you run from —
 asks which agent CLIs AgentPod should support, invites you to add custom agents
 or harnesses, asks whether AgentPod should add each selected agent's default
 autonomous flag, asks separately whether to install the Overlord manager package,
-prompts for an Overlord agent token when you use Overlord to manage agents,
-opens the file in your editor when possible, and finally offers to build the
+prompts for an Overlord backend URL and user token when you use Overlord to
+manage agents, opens the file in your editor when possible, and finally offers to build the
 Docker image now so it's ready the first time you launch an agent.
 
 > Make sure you install with `-g`. Without it, `npm install agent-pod-cli`
@@ -489,7 +490,7 @@ AGENT_POD_ENV_FILE=.env.agent agent-pod codex
 To verify what a new container sees:
 
 ```bash
-agent-pod shell env | grep OVERLORD_AGENT_TOKEN
+agent-pod shell env | grep -E 'OVERLORD_(BACKEND_URL|USER_TOKEN)'
 ```
 
 To forward extra variables from your current shell without an env-file:
@@ -647,7 +648,7 @@ from the file.
 
 `install.sh` builds a Node-based image that installs the selected npm agent CLIs
 (`@anthropic-ai/claude-code`, `@openai/codex`, `opencode-ai`), optionally
-installs `overlord-cli` as an agent manager package, and installs the Cursor
+installs `open-overlord` as an agent manager package, and installs the Cursor
 Agent via its vendor installer (relocated to a global path).
 
 The `agent-pod` launcher then runs, roughly:

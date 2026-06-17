@@ -2,11 +2,31 @@
 
 All notable changes to this project are documented in this file.
 
+## [1.19.0] - 2026-06-17:00:00
+
+### Added
+
+- Prompt for `OVERLORD_BACKEND_URL` during `agent-pod setup` when using Overlord to manage agents.
+
+### Fixed
+
+- None.
+
+### Changed
+
+- Switch from `overlord-cli` to the `open-overlord` npm package for `ovld`.
+- Use `ovld agent-setup` instead of `ovld setup` for connector and permission installation.
+- Store Overlord credentials as `OVERLORD_BACKEND_URL` and `OVERLORD_USER_TOKEN` (legacy `OVERLORD_URL` / `OVERLORD_AGENT_TOKEN` names are still read as fallbacks).
+
+### Security
+
+- None.
+
 ## [1.16.0] - 2026-06-04:16:38
 
 ### Added
 
-- Install the Overlord plugin inside the pod at launch. Before starting Claude or Codex, the launcher now runs the idempotent `ovld setup <agent>` in-container as the agent's own user/HOME, so `overlord:*` skills resolve in a fresh session instead of failing with "Unknown skill". Runs only when `ovld` is present on the pod PATH.
+- Install the Overlord plugin inside the pod at launch. Before starting Claude or Codex, the launcher now runs the idempotent `ovld agent-setup <agent>` in-container as the agent's own user/HOME, so `overlord:*` skills resolve in a fresh session instead of failing with "Unknown skill". Runs only when `ovld` is present on the pod PATH.
 
 ### Fixed
 

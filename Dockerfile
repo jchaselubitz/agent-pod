@@ -74,7 +74,7 @@ RUN echo "$CACHEBUST" >/dev/null; \
     fi
 RUN echo "$CACHEBUST" >/dev/null; \
     if [ "$INSTALL_OVERLORD" = "1" ]; then \
-      npm install -g --no-audit --no-fund "overlord-cli@${OVERLORD_VERSION}"; \
+      npm install -g --no-audit --no-fund "open-overlord@${OVERLORD_VERSION}"; \
     fi
 RUN echo "$CACHEBUST" >/dev/null; \
     if [ -n "$EXTRA_NPM_PACKAGES" ]; then \

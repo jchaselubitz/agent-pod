@@ -299,15 +299,36 @@ resolve_overlord_install() {
   fi
 }
 
-# Resolve the Overlord agent token the same way the launcher resolves config:
+# Resolve open-overlord credentials the same way the launcher resolves config:
 # an explicit environment variable wins, otherwise fall back to the central
 # config file (~/.agent-pod/.agent-pod.env, or AGENT_POD_ENV_FILE if set).
-resolve_overlord_token() {
+# Legacy OVERLORD_AGENT_TOKEN / OVERLORD_URL names are still accepted.
+resolve_overlord_user_token() {
+  if [ -n "${OVERLORD_USER_TOKEN:-}" ]; then
+    printf '%s\n' "$OVERLORD_USER_TOKEN"; return 0
+  fi
   if [ -n "${OVERLORD_AGENT_TOKEN:-}" ]; then
     printf '%s\n' "$OVERLORD_AGENT_TOKEN"; return 0
   fi
   cfg="${AGENT_POD_ENV_FILE:-${AGENT_POD_HOME:-$HOME/.agent-pod}/.agent-pod.env}"
+  if value="$(dotenv_get OVERLORD_USER_TOKEN "$cfg" 2>/dev/null)"; then
+    printf '%s\n' "$value"; return 0
+  fi
   dotenv_get OVERLORD_AGENT_TOKEN "$cfg" 2>/dev/null
+}
+
+resolve_overlord_backend_url() {
+  if [ -n "${OVERLORD_BACKEND_URL:-}" ]; then
+    printf '%s\n' "$OVERLORD_BACKEND_URL"; return 0
+  fi
+  if [ -n "${OVERLORD_URL:-}" ]; then
+    printf '%s\n' "$OVERLORD_URL"; return 0
+  fi
+  cfg="${AGENT_POD_ENV_FILE:-${AGENT_POD_HOME:-$HOME/.agent-pod}/.agent-pod.env}"
+  if value="$(dotenv_get OVERLORD_BACKEND_URL "$cfg" 2>/dev/null)"; then
+    printf '%s\n' "$value"; return 0
+  fi
+  dotenv_get OVERLORD_URL "$cfg" 2>/dev/null
 }
 
 # Fall back to the saved config file (managed by `agent-pod package-add`) when
@@ -413,35 +434,40 @@ for pkg in $EXTRA_APT_PACKAGES; do
 done
 
 # ---------------------------------------------------------------------------
-# Overlord connector setup (only when an Overlord token is configured).
+# Overlord connector setup (only when an Overlord user token is configured).
 #
-# `ovld setup all` writes its connectors and protocol permissions under the
-# agent's HOME (~/.codex, ~/.config/opencode, ~/.cursor, ~/.claude/plugins) and,
-# for Claude, into the project's ./.claude/settings.local.json. The launcher
+# `ovld agent-setup all` writes its connectors and protocol permissions under
+# the agent's HOME (~/.codex, ~/.config/opencode, ~/.cursor, ~/.claude/plugins)
+# and, for Claude, into the project's ./.claude/settings.local.json. The launcher
 # bind-mounts a *per-agent* state directory (~/.agent-pod/<agent>) over the
 # container's HOME at runtime, so anything written to HOME during `docker build`
-# is hidden behind that mount. We therefore run setup once per state directory,
-# inside a container from the freshly-built image, so the connectors land in the
-# host directories the launcher actually mounts back in.
+# is hidden behind that mount. We therefore run agent-setup once per state
+# directory, inside a container from the freshly-built image, so the connectors
+# land in the host directories the launcher actually mounts back in.
 #
 # It runs with stdin redirected from /dev/null (no TTY), which makes ovld's
 # permission prompt fall through to its default "yes" — so the protocol
-# commands each agent runs are pre-approved with no manual interaction and no
-# change to the Overlord CLI itself.
+# commands each agent runs are pre-approved with no manual interaction.
 setup_overlord_connectors() {
-  token="$(resolve_overlord_token || true)"
+  token="$(resolve_overlord_user_token || true)"
   [ -n "$token" ] || return 0
   if [ "$INSTALL_OVERLORD" != "1" ]; then
     warn "Overlord token detected, but the Overlord manager package is disabled. Skipping connector setup."
     return 0
   fi
 
+  backend_url="$(resolve_overlord_backend_url || true)"
+  if [ -z "$backend_url" ]; then
+    warn "Overlord user token detected, but no OVERLORD_BACKEND_URL is configured. Skipping connector setup."
+    warn "Set OVERLORD_BACKEND_URL in ~/.agent-pod/.agent-pod.env (e.g. http://127.0.0.1:4310) and re-run install-image."
+    return 0
+  fi
+
   state_root="${AGENT_POD_HOME:-$HOME/.agent-pod}"
-  ov_env=(-e "OVERLORD_AGENT_TOKEN=$token")
-  [ -n "${OVERLORD_URL:-}" ] && ov_env+=(-e "OVERLORD_URL=$OVERLORD_URL")
+  ov_env=(-e "OVERLORD_USER_TOKEN=$token" -e "OVERLORD_BACKEND_URL=$backend_url")
 
   info ""
-  info "Overlord token detected — running 'ovld setup all' for each agent..."
+  info "Overlord credentials detected — running 'ovld agent-setup all' for each agent..."
   for agent in $ENABLED_AGENTS; do
     state_dir="$state_root/$agent"
     mkdir -p "$state_dir/.npm-global"
@@ -455,10 +481,10 @@ setup_overlord_connectors() {
         -v "$state_dir:/home/agent-pod" \
         -w /home/agent-pod \
         "$IMAGE" \
-        ovld setup all </dev/null >/dev/null 2>&1; then
+        ovld agent-setup all </dev/null >/dev/null 2>&1; then
       ok "    connectors + permissions configured"
     else
-      warn "    'ovld setup all' failed for '$agent' — run it later with: agent-pod $agent (then 'ovld setup all')"
+      warn "    'ovld agent-setup all' failed for '$agent' — run it later with: agent-pod $agent (then 'ovld agent-setup all')"
     fi
   done
 }
