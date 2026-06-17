@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## [1.19.0] - 2026-06-17:00:00
+## [1.20.0] - 2026-06-17:00:00
 
 ### Added
 
@@ -10,10 +10,11 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
-- None.
+- Normalize bare `host:port` Overlord backend URLs (e.g. `host.docker.internal:4310`) to include `http://` before forwarding them into pods.
 
 ### Changed
 
+- Configure `ovld` inside the pod at launch from `OVERLORD_BACKEND_URL` and `OVERLORD_USER_TOKEN`, writing persistent config under the agent's bind-mounted HOME.
 - Switch from `overlord-cli` to the `open-overlord` npm package for `ovld`.
 - Use `ovld agent-setup` instead of `ovld setup` for connector and permission installation.
 - Store Overlord credentials as `OVERLORD_BACKEND_URL` and `OVERLORD_USER_TOKEN` (legacy `OVERLORD_URL` / `OVERLORD_AGENT_TOKEN` names are still read as fallbacks).

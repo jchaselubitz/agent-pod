@@ -318,17 +318,24 @@ resolve_overlord_user_token() {
 }
 
 resolve_overlord_backend_url() {
+  url=""
   if [ -n "${OVERLORD_BACKEND_URL:-}" ]; then
-    printf '%s\n' "$OVERLORD_BACKEND_URL"; return 0
+    url="$OVERLORD_BACKEND_URL"
+  elif [ -n "${OVERLORD_URL:-}" ]; then
+    url="$OVERLORD_URL"
+  else
+    cfg="${AGENT_POD_ENV_FILE:-${AGENT_POD_HOME:-$HOME/.agent-pod}/.agent-pod.env}"
+    if value="$(dotenv_get OVERLORD_BACKEND_URL "$cfg" 2>/dev/null)"; then
+      url="$value"
+    else
+      url="$(dotenv_get OVERLORD_URL "$cfg" 2>/dev/null || true)"
+    fi
   fi
-  if [ -n "${OVERLORD_URL:-}" ]; then
-    printf '%s\n' "$OVERLORD_URL"; return 0
-  fi
-  cfg="${AGENT_POD_ENV_FILE:-${AGENT_POD_HOME:-$HOME/.agent-pod}/.agent-pod.env}"
-  if value="$(dotenv_get OVERLORD_BACKEND_URL "$cfg" 2>/dev/null)"; then
-    printf '%s\n' "$value"; return 0
-  fi
-  dotenv_get OVERLORD_URL "$cfg" 2>/dev/null
+  [ -z "$url" ] && return 1
+  case "$url" in
+    http://*|https://*) printf '%s\n' "$url";;
+    *) printf 'http://%s\n' "$url";;
+  esac
 }
 
 # Fall back to the saved config file (managed by `agent-pod package-add`) when
@@ -481,7 +488,23 @@ setup_overlord_connectors() {
         -v "$state_dir:/home/agent-pod" \
         -w /home/agent-pod \
         "$IMAGE" \
-        ovld agent-setup all </dev/null >/dev/null 2>&1; then
+        bash -lc \
+          'if command -v ovld >/dev/null 2>&1; then
+             backend_url="${OVERLORD_BACKEND_URL:-}";
+             user_token="${OVERLORD_USER_TOKEN:-}";
+             if [ -n "$backend_url" ]; then
+               case "$backend_url" in http://*|https://*) ;; *) backend_url="http://${backend_url}";; esac;
+               case "$backend_url" in
+                 *://127.0.0.1:*|*://127.0.0.1|*://localhost:*|*://localhost|*://host.docker.internal:*|*://host.docker.internal)
+                   ovld config set local "$backend_url" >/dev/null 2>&1 || true;;
+                 *) ovld config set cloud "$backend_url" >/dev/null 2>&1 || true;;
+               esac;
+               if [ -n "$user_token" ]; then
+                 ovld auth login --token "$user_token" >/dev/null 2>&1 || true;
+               fi;
+             fi;
+             ovld agent-setup all;
+           fi' </dev/null >/dev/null 2>&1; then
       ok "    connectors + permissions configured"
     else
       warn "    'ovld agent-setup all' failed for '$agent' — run it later with: agent-pod $agent (then 'ovld agent-setup all')"

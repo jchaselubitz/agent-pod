@@ -114,6 +114,39 @@ truthy() {
   esac
 }
 
+# open-overlord requires an http:// or https:// URL. Users often omit the scheme
+# when pointing at host.docker.internal:4310 from inside a pod.
+normalize_overlord_backend_url() {
+  url="${1:-}"
+  [ -z "$url" ] && return 0
+  case "$url" in
+    http://*|https://*) printf '%s\n' "$url";;
+    *) printf 'http://%s\n' "$url";;
+  esac
+}
+
+# Shell fragment run inside the pod before the agent starts. When
+# OVERLORD_BACKEND_URL is forwarded into the container, write ~/.ovld/overlord.toml
+# via `ovld config set` so `ovld protocol` and related commands target the
+# configured backend. OVERLORD_USER_TOKEN is also honored at runtime by
+# open-overlord; we attempt `ovld auth login --token` so credentials persist in
+# the bind-mounted HOME when the backend is reachable.
+overlord_in_pod_bootstrap_fragment() {
+  printf '%s' \
+    'if command -v ovld >/dev/null 2>&1; then ' \
+    'backend_url="${OVERLORD_BACKEND_URL:-}"; ' \
+    'user_token="${OVERLORD_USER_TOKEN:-${OVLD_USER_TOKEN:-}}"; ' \
+    'if [ -n "$backend_url" ]; then ' \
+    'case "$backend_url" in http://*|https://*) ;; *) backend_url="http://${backend_url}";; esac; ' \
+    'export OVERLORD_BACKEND_URL="$backend_url"; ' \
+    'case "$backend_url" in ' \
+    '*://127.0.0.1:*|*://127.0.0.1|*://localhost:*|*://localhost|*://host.docker.internal:*|*://host.docker.internal) ' \
+    'ovld config set local "$backend_url" >/dev/null 2>&1 || true;; ' \
+    '*) ovld config set cloud "$backend_url" >/dev/null 2>&1 || true;; esac; ' \
+    'if [ -n "$user_token" ]; then ovld auth login --token "$user_token" >/dev/null 2>&1 || true; fi; ' \
+    'fi; fi; '
+}
+
 nonnegative_integer() {
   case "$1" in
     ""|*[!0-9]*) return 1;;
@@ -880,7 +913,7 @@ EOF
     fi
     backend_url="$(prompt_text "$backend_prompt" || true)"
     if [ -n "$backend_url" ]; then
-      upsert_env_var "$env_file" OVERLORD_BACKEND_URL "$backend_url"
+      upsert_env_var "$env_file" OVERLORD_BACKEND_URL "$(normalize_overlord_backend_url "$backend_url")"
     elif [ -z "$current_backend_url" ]; then
       upsert_env_var "$env_file" OVERLORD_BACKEND_URL "http://127.0.0.1:4310"
     fi
@@ -1476,6 +1509,7 @@ overlord_user_token="$(config_value OVERLORD_USER_TOKEN "")"
 
 overlord_backend_url="$(config_value OVERLORD_BACKEND_URL "")"
 [ -z "$overlord_backend_url" ] && overlord_backend_url="$(config_value OVERLORD_URL "")"
+overlord_backend_url="$(normalize_overlord_backend_url "$overlord_backend_url")"
 [ -n "$overlord_backend_url" ] && ENV_FLAGS+=(-e "OVERLORD_BACKEND_URL=$overlord_backend_url")
 
 # Forward any extra host variables requested for this project/session.
@@ -1552,10 +1586,11 @@ CMD=("$BIN")
 [ ${#YOLO[@]} -gt 0 ] && CMD+=("${YOLO[@]}")
 [ $# -gt 0 ] && CMD+=("$@")
 
-# Register the Overlord plugin inside the pod before launching the agent.
-# `ovld launch` runs on the HOST and cannot write into the pod's HOME, so the
-# plugin install must happen here, in-container, as the agent's own user/HOME.
-# `ovld agent-setup <agent>` installs via the agent's plugin CLI and is
+# Configure Overlord inside the pod and register agent plugins before launch.
+# `ovld launch` runs on the HOST and cannot write into the pod's HOME, so config
+# and plugin install must happen here, in-container, as the agent's own user/HOME.
+# When OVERLORD_BACKEND_URL is set, write ~/.ovld/overlord.toml from the forwarded
+# env vars. `ovld agent-setup <agent>` installs via the agent's plugin CLI and is
 # idempotent, so it is safe to run on every start. Output is sent to stderr to
 # keep the agent's stdout clean for non-interactive (`-p`/`exec`) captures.
 # Only built-in agents with an Overlord plugin have a setup target.
@@ -1565,8 +1600,11 @@ case "$AGENT" in
   codex)  OVLD_SETUP_TARGET=codex;;
 esac
 BOOTSTRAP=""
+if [ -n "$overlord_backend_url" ]; then
+  BOOTSTRAP="$(overlord_in_pod_bootstrap_fragment)"
+fi
 if [ -n "$OVLD_SETUP_TARGET" ]; then
-  BOOTSTRAP="if command -v ovld >/dev/null 2>&1; then ovld agent-setup $OVLD_SETUP_TARGET >&2 || true; fi; "
+  BOOTSTRAP="${BOOTSTRAP}if command -v ovld >/dev/null 2>&1; then ovld agent-setup $OVLD_SETUP_TARGET >&2 || true; fi; "
 fi
 
 # Claude Code's Bun-built Linux arm64 binary can bus-error when Docker starts

@@ -116,12 +116,15 @@ commands the agents run (the permission prompt is auto-accepted because the
 setup runs non-interactively), so agents launched via AgentPod can drive
 Overlord tickets without stopping for permission prompts.
 
-Regardless of the install-time step, every time you launch Claude or Codex the
-launcher also runs the idempotent `ovld agent-setup <agent>` inside the pod
-(when `ovld` is present), registering the Overlord plugin in the pod's HOME
-before the agent starts. This guarantees `overlord:*` skills resolve in a fresh
-session — the host-side `ovld launch` cannot write into the pod's HOME, so the
-install has to happen in-pod.
+Regardless of the install-time step, every pod launch with `OVERLORD_BACKEND_URL`
+set configures `ovld` inside the container from the forwarded
+`OVERLORD_BACKEND_URL` and `OVERLORD_USER_TOKEN` env vars (writing
+`~/.ovld/overlord.toml` and persisting auth when the backend is reachable).
+When you launch Claude or Codex, the launcher also runs the idempotent
+`ovld agent-setup <agent>` inside the pod (when `ovld` is present), registering
+the Overlord plugin in the pod's HOME before the agent starts. This guarantees
+`overlord:*` skills resolve in a fresh session — the host-side `ovld launch`
+cannot write into the pod's HOME, so the install has to happen in-pod.
 
 `agent-pod setup` creates or updates `~/.agent-pod/.agent-pod.env` — a single
 config file that lives with the CLI, not in whatever directory you run from —
