@@ -707,6 +707,32 @@ run_package_remove() {
   info "Rebuild the image to apply the change: agent-pod install-image"
 }
 
+trim_whitespace() {
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "$s"
+}
+
+# Allowed-path entries are an absolute path optionally suffixed with ":ro" or
+# ":rw" (":rw" is the default and rarely needs to be written explicitly).
+allowed_path_entry_path() {
+  case "$1" in
+    *:ro) printf '%s\n' "${1%:ro}";;
+    *:rw) printf '%s\n' "${1%:rw}";;
+    *) printf '%s\n' "$1";;
+  esac
+}
+
+allowed_path_entry_mode() {
+  case "$1" in
+    *:ro) printf 'ro\n';;
+    *) printf 'rw\n';;
+  esac
+}
+
+# Matches by the path portion only, so a list can't carry the same path twice
+# under different modes.
 path_in_csv_list() {
   local needle="$1"
   local list="$2"
@@ -714,7 +740,7 @@ path_in_csv_list() {
   OLDIFS="$IFS"; IFS=','
   for existing in $list; do
     IFS="$OLDIFS"
-    [ "$existing" = "$needle" ] && return 0
+    [ "$(allowed_path_entry_path "$existing")" = "$needle" ] && return 0
     OLDIFS="$IFS"; IFS=','
   done
   IFS="$OLDIFS"
@@ -722,15 +748,70 @@ path_in_csv_list() {
 }
 
 valid_allowed_path() {
-  case "$1" in
+  local path
+  path="$(allowed_path_entry_path "$1")"
+  case "$path" in
     /*) ;;
     *) return 1;;
   esac
-  case "$1" in
+  case "$path" in
     *","*) return 1;;
   esac
-  [ -e "$1" ] || return 1
+  [ -e "$path" ] || return 1
   return 0
+}
+
+# Project-local allowlist file: committed to the repo (unlike .agent-pod.env,
+# which is gitignored) so a team can share required paths via version control.
+# One entry per line, "#" starts a comment, optional ":ro"/":rw" suffix.
+project_paths_file() {
+  printf '%s\n' ".agent-pod-allowed-paths"
+}
+
+# Entries from the project file, trimmed and stripped of comments/blanks.
+read_project_paths_file() {
+  local file content
+  file="$(project_paths_file)"
+  [ -f "$file" ] || return 0
+  while IFS= read -r content || [ -n "$content" ]; do
+    content="$(trim_whitespace "${content%%#*}")"
+    [ -n "$content" ] && printf '%s\n' "$content"
+  done < "$file"
+}
+
+add_project_allowed_path() {
+  local entry="$1" file base line content replaced tmp
+  file="$(project_paths_file)"
+  [ -f "$file" ] || : > "$file"
+  base="$(allowed_path_entry_path "$entry")"
+  tmp="${file}.tmp.$$"
+  replaced=0
+  : > "$tmp"
+  while IFS= read -r line || [ -n "$line" ]; do
+    content="$(trim_whitespace "${line%%#*}")"
+    if [ -n "$content" ] && [ "$(allowed_path_entry_path "$content")" = "$base" ]; then
+      printf '%s\n' "$entry" >> "$tmp"
+      replaced=1
+    else
+      printf '%s\n' "$line" >> "$tmp"
+    fi
+  done < "$file"
+  [ "$replaced" -eq 1 ] || printf '%s\n' "$entry" >> "$tmp"
+  mv "$tmp" "$file"
+}
+
+remove_project_allowed_path() {
+  local target="$1" file line content tmp
+  file="$(project_paths_file)"
+  [ -f "$file" ] || return 0
+  tmp="${file}.tmp.$$"
+  : > "$tmp"
+  while IFS= read -r line || [ -n "$line" ]; do
+    content="$(trim_whitespace "${line%%#*}")"
+    [ -n "$content" ] && [ "$(allowed_path_entry_path "$content")" = "$target" ] && continue
+    printf '%s\n' "$line" >> "$tmp"
+  done < "$file"
+  mv "$tmp" "$file"
 }
 
 run_file_access() {
@@ -743,7 +824,7 @@ run_file_access() {
         OLDIFS="$IFS"; IFS=','
         for path in $current; do
           IFS="$OLDIFS"
-          printf '  %s\n' "$path"
+          printf '  %s (%s)\n' "$(allowed_path_entry_path "$path")" "$(allowed_path_entry_mode "$path")"
           OLDIFS="$IFS"; IFS=','
         done
         IFS="$OLDIFS"
@@ -751,50 +832,102 @@ run_file_access() {
         printf '  (none)\n'
       fi
       info "Config: ${ENV_FILE:-$CONFIG_ENV_FILE}"
+      project_entries="$(read_project_paths_file)"
+      info "Project file ($(project_paths_file)) in $PWD:"
+      if [ -n "$project_entries" ]; then
+        while IFS= read -r entry; do
+          printf '  %s (%s)\n' "$(allowed_path_entry_path "$entry")" "$(allowed_path_entry_mode "$entry")"
+        done <<< "$project_entries"
+      else
+        printf '  (none)\n'
+      fi
       ;;
     add|allow)
       shift
-      [ $# -ge 1 ] || die "Usage: agent-pod file-access add <absolute-path> [absolute-path...]"
-      next="$current"
-      for path in "$@"; do
-        valid_allowed_path "$path" \
-          || die "Invalid allowed path '$path'. Use an existing absolute path without commas."
-        if ! path_in_csv_list "$path" "$next"; then
-          next="${next:+$next,}$path"
-        fi
-      done
-      env_file="$(ensure_config_file)"
-      upsert_env_var "$env_file" AGENT_POD_ALLOWED_PATHS "$next"
-      ok "Allowed paths for future pods:"
-      AGENT_POD_ALLOWED_PATHS="$next" run_file_access list
+      [ $# -ge 1 ] || die "Usage: agent-pod file-access add [--project] <path>[:ro] [path[:ro]...]"
+      project=0
+      if [ "$1" = "--project" ]; then
+        project=1
+        shift
+      fi
+      [ $# -ge 1 ] || die "Usage: agent-pod file-access add [--project] <path>[:ro] [path[:ro]...]"
+      if [ "$project" -eq 1 ]; then
+        for entry in "$@"; do
+          valid_allowed_path "$entry" \
+            || die "Invalid allowed path '$entry'. Use an existing absolute path without commas, optionally suffixed with :ro."
+          add_project_allowed_path "$entry"
+        done
+        ok "Allowed paths in $(project_paths_file) (shared via git):"
+      else
+        next="$current"
+        for entry in "$@"; do
+          valid_allowed_path "$entry" \
+            || die "Invalid allowed path '$entry'. Use an existing absolute path without commas, optionally suffixed with :ro."
+          base="$(allowed_path_entry_path "$entry")"
+          if path_in_csv_list "$base" "$next"; then
+            filtered=""
+            OLDIFS="$IFS"; IFS=','
+            for existing in $next; do
+              IFS="$OLDIFS"
+              [ "$(allowed_path_entry_path "$existing")" = "$base" ] || filtered="${filtered:+$filtered,}$existing"
+              OLDIFS="$IFS"; IFS=','
+            done
+            IFS="$OLDIFS"
+            next="$filtered"
+          fi
+          next="${next:+$next,}$entry"
+        done
+        env_file="$(ensure_config_file)"
+        upsert_env_var "$env_file" AGENT_POD_ALLOWED_PATHS "$next"
+        ok "Allowed paths for future pods:"
+      fi
+      # ${next-...} (not :-) so an emptied personal list still shows (none);
+      # the --project branch leaves $next unset, so it falls back to $current.
+      AGENT_POD_ALLOWED_PATHS="${next-$current}" run_file_access list
       ;;
     remove|deny)
       shift
-      [ $# -ge 1 ] || die "Usage: agent-pod file-access remove <absolute-path> [absolute-path...]"
-      next=""
-      OLDIFS="$IFS"; IFS=','
-      for existing in $current; do
-        IFS="$OLDIFS"
-        remove=0
+      [ $# -ge 1 ] || die "Usage: agent-pod file-access remove [--project] <path> [path...]"
+      project=0
+      if [ "$1" = "--project" ]; then
+        project=1
+        shift
+      fi
+      [ $# -ge 1 ] || die "Usage: agent-pod file-access remove [--project] <path> [path...]"
+      if [ "$project" -eq 1 ]; then
         for path in "$@"; do
-          [ "$existing" = "$path" ] && { remove=1; break; }
+          remove_project_allowed_path "$(allowed_path_entry_path "$path")"
         done
-        [ "$remove" -eq 1 ] || next="${next:+$next,}$existing"
+        ok "Allowed paths in $(project_paths_file) (shared via git):"
+      else
+        next=""
         OLDIFS="$IFS"; IFS=','
-      done
-      IFS="$OLDIFS"
-      env_file="$(ensure_config_file)"
-      upsert_env_var "$env_file" AGENT_POD_ALLOWED_PATHS "$next"
-      ok "Allowed paths for future pods:"
-      AGENT_POD_ALLOWED_PATHS="$next" run_file_access list
+        for existing in $current; do
+          IFS="$OLDIFS"
+          remove=0
+          for path in "$@"; do
+            [ "$(allowed_path_entry_path "$existing")" = "$(allowed_path_entry_path "$path")" ] && { remove=1; break; }
+          done
+          [ "$remove" -eq 1 ] || next="${next:+$next,}$existing"
+          OLDIFS="$IFS"; IFS=','
+        done
+        IFS="$OLDIFS"
+        env_file="$(ensure_config_file)"
+        upsert_env_var "$env_file" AGENT_POD_ALLOWED_PATHS "$next"
+        ok "Allowed paths for future pods:"
+      fi
+      # ${next-...} (not :-) so an emptied personal list still shows (none);
+      # the --project branch leaves $next unset, so it falls back to $current.
+      AGENT_POD_ALLOWED_PATHS="${next-$current}" run_file_access list
       ;;
     clear|off|disable)
       [ $# -eq 1 ] || die "Usage: agent-pod file-access clear"
       env_file="$(ensure_config_file)"
       upsert_env_var "$env_file" AGENT_POD_ALLOWED_PATHS ""
       ok "Extra file access disabled for future pods."
+      warn "Project file $(project_paths_file) (if present) is untouched; edit it directly or use --project to manage it."
       ;;
-    *) die "Usage: agent-pod file-access [list|add <path...>|remove <path...>|clear]";;
+    *) die "Usage: agent-pod file-access [list|add [--project] <path[:ro]>...|remove [--project] <path>...|clear]";;
   esac
 }
 
@@ -1180,22 +1313,44 @@ the host or mounting the Docker socket.
 Programmatic one-launch usage:
   AGENT_POD_ALLOWED_PATHS=/absolute/path/to/other-repo agent-pod codex
   AGENT_POD_ALLOWED_PATHS=/repo/a,/repo/b agent-pod claude
+  AGENT_POD_ALLOWED_PATHS=/repo/a:ro,/repo/b agent-pod claude     # :ro = read-only
 
-Persisted config for future launches:
+Persisted config for future launches (personal, written to ~/.agent-pod/.agent-pod.env):
   agent-pod file-access add /absolute/path/to/other-repo
+  agent-pod file-access add /absolute/path/to/assets:ro
   agent-pod file-access list
   agent-pod file-access remove /absolute/path/to/other-repo
   agent-pod file-access clear
 
+Shared per-project config (committed to the repo, unlike .agent-pod.env):
+  agent-pod file-access add --project /absolute/path/to/assets:ro
+  agent-pod file-access remove --project /absolute/path/to/assets
+  This writes/reads .agent-pod-allowed-paths in the current directory — one
+  path per line, "#" comments, optional :ro/:rw suffix. Commit this file so
+  every teammate's pod gets the same extra paths automatically.
+
+Ephemeral, additive, one-launch-only extra paths (e.g. for automation that
+injects a task-specific folder right before launch, like Overlord):
+  AGENT_POD_EXTRA_ALLOWED_PATHS=/tmp/task-123-assets:ro agent-pod claude
+  This is env-only — never read from or written to a config file. It is
+  ADDED on top of whatever the personal config and project file already
+  allow; it never replaces or persists them, and it never overrides the mode
+  of a path that's already allowed by either of those two sources.
+
 Config key written to ~/.agent-pod/.agent-pod.env:
-  AGENT_POD_ALLOWED_PATHS=/repo/a,/repo/b     comma-separated existing absolute paths
+  AGENT_POD_ALLOWED_PATHS=/repo/a,/repo/b:ro     comma-separated existing absolute paths
 
 How it mounts:
-  • Each allowed path is bind-mounted read/write at the same absolute path
-    inside the pod.
+  • Each allowed path is bind-mounted at the same absolute path inside the
+    pod, read/write by default or read-only with a ":ro" suffix.
   • Paths must already exist, must be absolute, and cannot contain commas.
+  • All three sources (env/config allowlist, project file, and
+    AGENT_POD_EXTRA_ALLOWED_PATHS) are merged for every launch; first match
+    wins in that order, so a path's mode is set by whichever source lists it
+    first.
   • Settings apply only to NEW pods; restart the pod after changing them.
-  • Keep the list narrow. Every allowed path is editable by the agent process.
+  • Keep the list narrow. Every read/write path is editable by the agent
+    process; use :ro for paths the agent should only read.
 
 Verify in a fresh pod:
   agent-pod shell test -e /absolute/path/to/other-repo
@@ -1328,7 +1483,7 @@ Usage:
                                   Add custom packages to bake into the image
   agent-pod package-remove [--npm|--apt] <pkg...>
                                   Remove custom packages from the image
-  agent-pod file-access [list|add|remove|clear]
+  agent-pod file-access [list|add|remove|clear] [--project] <path[:ro]>
                                   Allowlist extra host paths for new pods
   agent-pod docker-access [on|off|status]
                                   Show or toggle host Docker socket mounting
@@ -1398,6 +1553,11 @@ STATE_ROOT="$(config_value AGENT_POD_HOME "$HOME/.agent-pod")"
 PORTS_VALUE="$(config_value PORTS "${PORTS:-}")"
 AGENT_POD_ENV_VALUE="$(config_value AGENT_POD_ENV "${AGENT_POD_ENV:-}")"
 AGENT_POD_ALLOWED_PATHS_VALUE="$(config_value AGENT_POD_ALLOWED_PATHS "${AGENT_POD_ALLOWED_PATHS:-}")"
+# Ephemeral, additive, per-launch extra paths. Env-only on purpose (never read
+# from a config file) so automation (e.g. Overlord injecting a task-specific
+# folder right before launch) can add a path for one run without touching, or
+# being overridden by, the persisted personal/project allowlists.
+AGENT_POD_EXTRA_ALLOWED_PATHS_VALUE="${AGENT_POD_EXTRA_ALLOWED_PATHS:-}"
 
 # ---- argument parsing -----------------------------------------------------
 [ $# -ge 1 ] || { usage; exit 1; }
@@ -1539,20 +1699,50 @@ if [ -n "$ENV_FILE" ]; then
 fi
 
 # ---- optional allowlisted host file access --------------------------------
+# Two sources, merged: the env/config allowlist (personal, can live outside
+# the repo) and the project file .agent-pod-allowed-paths (committed, shared
+# with the team). The env/config source wins when both list the same path.
 FILE_ACCESS_FLAGS=()
-if [ -n "$AGENT_POD_ALLOWED_PATHS_VALUE" ]; then
+ALLOWED_PATHS_SEEN=""
+
+add_allowed_path_flag() {
+  local entry="$1" source_label="$2" path mode
+  valid_allowed_path "$entry" \
+    || die "Invalid $source_label entry '$entry'. Use an existing absolute path without commas, optionally suffixed with :ro."
+  path="$(allowed_path_entry_path "$entry")"
+  path_in_csv_list "$path" "$ALLOWED_PATHS_SEEN" && return 0
+  ALLOWED_PATHS_SEEN="${ALLOWED_PATHS_SEEN:+$ALLOWED_PATHS_SEEN,}$path"
+  mode="$(allowed_path_entry_mode "$entry")"
+  FILE_ACCESS_FLAGS+=(-v "$path:$path:$mode")
+  info "Allowing host path in pod ($mode): $path"
+}
+
+# Add every entry in a comma-separated allowlist to the mount flags.
+add_allowed_paths_from_csv() {
+  local csv="$1" label="$2" entry
+  [ -n "$csv" ] || return 0
   OLDIFS="$IFS"; IFS=','
-  for allowed_path in $AGENT_POD_ALLOWED_PATHS_VALUE; do
+  for entry in $csv; do
     IFS="$OLDIFS"
-    [ -z "$allowed_path" ] && { OLDIFS="$IFS"; IFS=','; continue; }
-    valid_allowed_path "$allowed_path" \
-      || die "Invalid AGENT_POD_ALLOWED_PATHS entry '$allowed_path'. Use existing absolute paths without commas."
-    FILE_ACCESS_FLAGS+=(-v "$allowed_path:$allowed_path")
-    info "Allowing host path in pod: $allowed_path"
+    [ -n "$entry" ] && add_allowed_path_flag "$entry" "$label"
     OLDIFS="$IFS"; IFS=','
   done
   IFS="$OLDIFS"
+}
+
+# Order matters: first source to list a path sets its mount mode. Personal
+# env/config wins over the committed project file, which wins over the
+# ephemeral per-launch extras.
+add_allowed_paths_from_csv "$AGENT_POD_ALLOWED_PATHS_VALUE" "AGENT_POD_ALLOWED_PATHS"
+
+PROJECT_PATHS_ENTRIES="$(read_project_paths_file)"
+if [ -n "$PROJECT_PATHS_ENTRIES" ]; then
+  while IFS= read -r project_path_entry; do
+    add_allowed_path_flag "$project_path_entry" "$(project_paths_file)"
+  done <<< "$PROJECT_PATHS_ENTRIES"
 fi
+
+add_allowed_paths_from_csv "$AGENT_POD_EXTRA_ALLOWED_PATHS_VALUE" "AGENT_POD_EXTRA_ALLOWED_PATHS"
 
 # ---- optional host Docker daemon access ----------------------------------
 DOCKER_ACCESS_FLAGS=()
