@@ -502,33 +502,63 @@ To forward extra variables from your current shell without an env-file:
 AWS_PROFILE=dev AGENT_POD_ENV=AWS_PROFILE,MY_API_URL agent-pod claude
 ```
 
-### Allowing access to another repo or file
+### Allowing access to another repo or folder
 
 By default a pod sees only the directory where you launch it. To launch an
-agent in one repo while letting it read or edit another specific repo/file,
-allowlist that path. Each allowlisted path is bind-mounted read/write at the
-same absolute path inside new pods.
+agent in one repo while letting it read or edit another specific repo/folder
+(e.g. a shared assets folder), allowlist that path. Each allowlisted path is
+bind-mounted at the same absolute path inside new pods — read/write by
+default, or read-only with a `:ro` suffix — and its children come along with
+it.
 
 For a single launch:
 
 ```bash
 AGENT_POD_ALLOWED_PATHS=/Users/me/src/shared-lib agent-pod codex
-AGENT_POD_ALLOWED_PATHS=/repo/a,/repo/b agent-pod claude
+AGENT_POD_ALLOWED_PATHS=/repo/a,/repo/b:ro agent-pod claude   # /repo/b mounted read-only
 ```
 
-To persist access for future launches:
+To persist access for future launches (personal, written to
+`~/.agent-pod/.agent-pod.env`):
 
 ```bash
 agent-pod file-access add /Users/me/src/shared-lib
+agent-pod file-access add /Users/me/assets:ro
 agent-pod file-access list
 agent-pod file-access remove /Users/me/src/shared-lib
 agent-pod file-access clear
 ```
 
 Paths must already exist, must be absolute, and cannot contain commas. The list
-is intentionally narrow: every allowed path is editable by the agent process.
-Changes apply only to new pods, so restart `agent-pod` after editing the
-allowlist.
+is intentionally narrow: every read/write path is editable by the agent
+process, so use `:ro` for paths the agent should only read. Changes apply only
+to new pods, so restart `agent-pod` after editing the allowlist.
+
+#### Sharing an allowlist with your team
+
+`AGENT_POD_ALLOWED_PATHS` lives in `~/.agent-pod/.agent-pod.env` (or a
+project-local `.agent-pod.env`), both of which are gitignored. To give every
+teammate's pod the same extra paths automatically, commit a
+`.agent-pod-allowed-paths` file to the repo instead — one absolute path per
+line, `#` comments, optional `:ro`/`:rw` suffix:
+
+```
+# shared-lib used by the build
+/Users/me/src/shared-lib
+# read-only design assets
+/Users/me/assets:ro
+```
+
+Manage it with the same CLI, via `--project`:
+
+```bash
+agent-pod file-access add --project /Users/me/assets:ro
+agent-pod file-access remove --project /Users/me/assets
+agent-pod file-access list   # shows both the personal and project allowlists
+```
+
+Both sources are merged into every pod launched from that directory; if the
+same path appears in both, the personal/env entry's mode wins.
 
 ### Exposing dev-server ports
 
@@ -616,7 +646,7 @@ agent-pod network supabase_network_<project>
 |----------|---------|---------|
 | `PORTS` | _(none)_ | Comma-separated ports to publish on localhost |
 | `AGENT_POD_ENV` | _(none)_ | Comma- or space-separated host env var names to forward |
-| `AGENT_POD_ALLOWED_PATHS` | _(none)_ | Comma-separated existing absolute host paths to bind-mount read/write into new pods |
+| `AGENT_POD_ALLOWED_PATHS` | _(none)_ | Comma-separated existing absolute host paths to bind-mount into new pods; read/write by default, append `:ro` per path for read-only |
 | `AGENT_POD_ENV_FILE` | `~/.agent-pod/.agent-pod.env`, then legacy project/launcher files | Docker env-file to load into the container |
 | `AGENT_POD_YOLO` | `1` | Set to `0` to drop the auto-approve flags |
 | `AGENT_POD_AGENTS` | `claude,codex,opencode,cursor` | Comma- or space-separated agents to build and run (built-in + custom) |
