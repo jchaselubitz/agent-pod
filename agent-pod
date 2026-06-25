@@ -1325,6 +1325,14 @@ Shared per-project config (committed to the repo, unlike .agent-pod.env):
   path per line, "#" comments, optional :ro/:rw suffix. Commit this file so
   every teammate's pod gets the same extra paths automatically.
 
+Ephemeral, additive, one-launch-only extra paths (e.g. for automation that
+injects a task-specific folder right before launch, like Overlord):
+  AGENT_POD_EXTRA_ALLOWED_PATHS=/tmp/task-123-assets:ro agent-pod claude
+  This is env-only — never read from or written to a config file. It is
+  ADDED on top of whatever the personal config and project file already
+  allow; it never replaces or persists them, and it never overrides the mode
+  of a path that's already allowed by either of those two sources.
+
 Config key written to ~/.agent-pod/.agent-pod.env:
   AGENT_POD_ALLOWED_PATHS=/repo/a,/repo/b:ro     comma-separated existing absolute paths
 
@@ -1332,8 +1340,10 @@ How it mounts:
   • Each allowed path is bind-mounted at the same absolute path inside the
     pod, read/write by default or read-only with a ":ro" suffix.
   • Paths must already exist, must be absolute, and cannot contain commas.
-  • The env/config allowlist and the project file are both applied; if a
-    path appears in both, the env/config entry's mode wins.
+  • All three sources (env/config allowlist, project file, and
+    AGENT_POD_EXTRA_ALLOWED_PATHS) are merged for every launch; first match
+    wins in that order, so a path's mode is set by whichever source lists it
+    first.
   • Settings apply only to NEW pods; restart the pod after changing them.
   • Keep the list narrow. Every read/write path is editable by the agent
     process; use :ro for paths the agent should only read.
@@ -1539,6 +1549,11 @@ STATE_ROOT="$(config_value AGENT_POD_HOME "$HOME/.agent-pod")"
 PORTS_VALUE="$(config_value PORTS "${PORTS:-}")"
 AGENT_POD_ENV_VALUE="$(config_value AGENT_POD_ENV "${AGENT_POD_ENV:-}")"
 AGENT_POD_ALLOWED_PATHS_VALUE="$(config_value AGENT_POD_ALLOWED_PATHS "${AGENT_POD_ALLOWED_PATHS:-}")"
+# Ephemeral, additive, per-launch extra paths. Env-only on purpose (never read
+# from a config file) so automation (e.g. Overlord injecting a task-specific
+# folder right before launch) can add a path for one run without touching, or
+# being overridden by, the persisted personal/project allowlists.
+AGENT_POD_EXTRA_ALLOWED_PATHS_VALUE="${AGENT_POD_EXTRA_ALLOWED_PATHS:-}"
 
 # ---- argument parsing -----------------------------------------------------
 [ $# -ge 1 ] || { usage; exit 1; }
@@ -1713,6 +1728,16 @@ if [ -n "$PROJECT_PATHS_ENTRIES" ]; then
   while IFS= read -r project_path_entry; do
     add_allowed_path_flag "$project_path_entry" "$(project_paths_file)"
   done <<< "$PROJECT_PATHS_ENTRIES"
+fi
+
+if [ -n "$AGENT_POD_EXTRA_ALLOWED_PATHS_VALUE" ]; then
+  OLDIFS="$IFS"; IFS=','
+  for extra_allowed_path in $AGENT_POD_EXTRA_ALLOWED_PATHS_VALUE; do
+    IFS="$OLDIFS"
+    [ -n "$extra_allowed_path" ] && add_allowed_path_flag "$extra_allowed_path" "AGENT_POD_EXTRA_ALLOWED_PATHS"
+    OLDIFS="$IFS"; IFS=','
+  done
+  IFS="$OLDIFS"
 fi
 
 # ---- optional host Docker daemon access ----------------------------------

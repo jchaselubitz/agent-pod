@@ -560,6 +560,27 @@ agent-pod file-access list   # shows both the personal and project allowlists
 Both sources are merged into every pod launched from that directory; if the
 same path appears in both, the personal/env entry's mode wins.
 
+#### Injecting a path for a single launch (e.g. from automation like Overlord)
+
+`AGENT_POD_ALLOWED_PATHS` is read at launch time, not baked into the image, so
+external tooling that starts a pod (for example Overlord picking a
+task-specific folder right before it runs `agent-pod`) can set it per launch.
+But setting `AGENT_POD_ALLOWED_PATHS` as an env var *replaces* the personal
+allowlist for that one run rather than adding to it.
+
+For an injected path that should add to, not replace, the standing
+allowlists, use `AGENT_POD_EXTRA_ALLOWED_PATHS` instead:
+
+```bash
+AGENT_POD_EXTRA_ALLOWED_PATHS=/tmp/task-123-assets:ro agent-pod claude
+```
+
+This variable is env-only — it's never read from or written to a config file.
+It merges on top of both the personal config and the project file for that
+one launch, without overriding either, and leaves nothing behind afterward.
+If a path it lists is already allowed by the personal config or the project
+file, that source's mode wins (the variable only adds genuinely new paths).
+
 ### Exposing dev-server ports
 
 By default nothing is published. Expose ports with `PORTS`:
@@ -646,7 +667,8 @@ agent-pod network supabase_network_<project>
 |----------|---------|---------|
 | `PORTS` | _(none)_ | Comma-separated ports to publish on localhost |
 | `AGENT_POD_ENV` | _(none)_ | Comma- or space-separated host env var names to forward |
-| `AGENT_POD_ALLOWED_PATHS` | _(none)_ | Comma-separated existing absolute host paths to bind-mount into new pods; read/write by default, append `:ro` per path for read-only |
+| `AGENT_POD_ALLOWED_PATHS` | _(none)_ | Comma-separated existing absolute host paths to bind-mount into new pods; read/write by default, append `:ro` per path for read-only. Set as an env var, replaces the persisted personal allowlist for that one launch |
+| `AGENT_POD_EXTRA_ALLOWED_PATHS` | _(none)_ | Env-only, never persisted: same syntax as `AGENT_POD_ALLOWED_PATHS`, but merges additively on top of the personal config and project file for one launch instead of replacing them |
 | `AGENT_POD_ENV_FILE` | `~/.agent-pod/.agent-pod.env`, then legacy project/launcher files | Docker env-file to load into the container |
 | `AGENT_POD_YOLO` | `1` | Set to `0` to drop the auto-approve flags |
 | `AGENT_POD_AGENTS` | `claude,codex,opencode,cursor` | Comma- or space-separated agents to build and run (built-in + custom) |
