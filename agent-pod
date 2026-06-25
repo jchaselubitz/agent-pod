@@ -435,6 +435,23 @@ open_in_editor() {
   fi
 }
 
+read_package_version() {
+  version_file="$LAUNCHER_DIR/package.json"
+  [ -f "$version_file" ] || die "Version unavailable: $version_file not found"
+  if command -v node >/dev/null 2>&1; then
+    node -e "process.stdout.write(require(process.argv[1]).version)" "$version_file"
+    return 0
+  fi
+  version="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$version_file" | head -1)"
+  [ -n "$version" ] || die "Could not read version from $version_file"
+  printf '%s' "$version"
+}
+
+run_version() {
+  [ $# -eq 0 ] || die "Usage: agent-pod version"
+  printf '%s\n' "$(read_package_version)"
+}
+
 run_update() {
   info "Updating agent-pod-cli to the latest version..."
   if command -v npm >/dev/null 2>&1; then
@@ -1498,6 +1515,7 @@ Usage:
   agent-pod stop [agent...]      Stop running agent-pod container(s)
   agent-pod prune [hours]        Remove stopped AgentPod containers
   agent-pod update               Update agent-pod-cli to the latest version
+  agent-pod version              Print the installed agent-pod-cli version
   agent-pod uninstall            Remove the Docker image and ~/.agent-pod state
   agent-pod --help
 
@@ -1562,6 +1580,7 @@ AGENT_POD_EXTRA_ALLOWED_PATHS_VALUE="${AGENT_POD_EXTRA_ALLOWED_PATHS:-}"
 # ---- argument parsing -----------------------------------------------------
 [ $# -ge 1 ] || { usage; exit 1; }
 case "$1" in -h|--help|help) usage; exit 0;; esac
+case "$1" in -v|--version) run_version; exit 0;; esac
 case "$1" in
   setup) run_setup; exit 0;;
   agents) run_agents_list; exit 0;;
@@ -1576,6 +1595,7 @@ case "$1" in
   protocol) shift; run_protocol "$@"; exit 0;;
   edit-env) run_edit_env; exit 0;;
   update) run_update; exit 0;;
+  version) shift; run_version "$@"; exit 0;;
   start|update-image) shift; run_update_image "$@"; exit 0;;
   stop) shift; run_stop "$@"; exit 0;;
   prune) shift; run_prune "$@"; exit 0;;
