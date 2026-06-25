@@ -881,7 +881,9 @@ run_file_access() {
         upsert_env_var "$env_file" AGENT_POD_ALLOWED_PATHS "$next"
         ok "Allowed paths for future pods:"
       fi
-      AGENT_POD_ALLOWED_PATHS="${next:-$current}" run_file_access list
+      # ${next-...} (not :-) so an emptied personal list still shows (none);
+      # the --project branch leaves $next unset, so it falls back to $current.
+      AGENT_POD_ALLOWED_PATHS="${next-$current}" run_file_access list
       ;;
     remove|deny)
       shift
@@ -914,7 +916,9 @@ run_file_access() {
         upsert_env_var "$env_file" AGENT_POD_ALLOWED_PATHS "$next"
         ok "Allowed paths for future pods:"
       fi
-      AGENT_POD_ALLOWED_PATHS="${next:-$current}" run_file_access list
+      # ${next-...} (not :-) so an emptied personal list still shows (none);
+      # the --project branch leaves $next unset, so it falls back to $current.
+      AGENT_POD_ALLOWED_PATHS="${next-$current}" run_file_access list
       ;;
     clear|off|disable)
       [ $# -eq 1 ] || die "Usage: agent-pod file-access clear"
@@ -1713,15 +1717,23 @@ add_allowed_path_flag() {
   info "Allowing host path in pod ($mode): $path"
 }
 
-if [ -n "$AGENT_POD_ALLOWED_PATHS_VALUE" ]; then
+# Add every entry in a comma-separated allowlist to the mount flags.
+add_allowed_paths_from_csv() {
+  local csv="$1" label="$2" entry
+  [ -n "$csv" ] || return 0
   OLDIFS="$IFS"; IFS=','
-  for allowed_path in $AGENT_POD_ALLOWED_PATHS_VALUE; do
+  for entry in $csv; do
     IFS="$OLDIFS"
-    [ -n "$allowed_path" ] && add_allowed_path_flag "$allowed_path" "AGENT_POD_ALLOWED_PATHS"
+    [ -n "$entry" ] && add_allowed_path_flag "$entry" "$label"
     OLDIFS="$IFS"; IFS=','
   done
   IFS="$OLDIFS"
-fi
+}
+
+# Order matters: first source to list a path sets its mount mode. Personal
+# env/config wins over the committed project file, which wins over the
+# ephemeral per-launch extras.
+add_allowed_paths_from_csv "$AGENT_POD_ALLOWED_PATHS_VALUE" "AGENT_POD_ALLOWED_PATHS"
 
 PROJECT_PATHS_ENTRIES="$(read_project_paths_file)"
 if [ -n "$PROJECT_PATHS_ENTRIES" ]; then
@@ -1730,15 +1742,7 @@ if [ -n "$PROJECT_PATHS_ENTRIES" ]; then
   done <<< "$PROJECT_PATHS_ENTRIES"
 fi
 
-if [ -n "$AGENT_POD_EXTRA_ALLOWED_PATHS_VALUE" ]; then
-  OLDIFS="$IFS"; IFS=','
-  for extra_allowed_path in $AGENT_POD_EXTRA_ALLOWED_PATHS_VALUE; do
-    IFS="$OLDIFS"
-    [ -n "$extra_allowed_path" ] && add_allowed_path_flag "$extra_allowed_path" "AGENT_POD_EXTRA_ALLOWED_PATHS"
-    OLDIFS="$IFS"; IFS=','
-  done
-  IFS="$OLDIFS"
-fi
+add_allowed_paths_from_csv "$AGENT_POD_EXTRA_ALLOWED_PATHS_VALUE" "AGENT_POD_EXTRA_ALLOWED_PATHS"
 
 # ---- optional host Docker daemon access ----------------------------------
 DOCKER_ACCESS_FLAGS=()
