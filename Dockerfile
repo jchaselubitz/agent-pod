@@ -78,7 +78,31 @@ RUN echo "$CACHEBUST" >/dev/null; \
     fi
 RUN echo "$CACHEBUST" >/dev/null; \
     if [ -n "$EXTRA_NPM_PACKAGES" ]; then \
-      npm install -g --no-audit --no-fund $EXTRA_NPM_PACKAGES; \
+      set -f; \
+      set -- $EXTRA_NPM_PACKAGES; \
+      set +f; \
+      install_railway_cli() { \
+        pkg="$1"; \
+        version=""; \
+        case "$pkg" in \
+          @railway/cli@*) version="${pkg#@railway/cli@}" ;; \
+        esac; \
+        curl -fsSL https://railway.com/install.sh -o /tmp/railway-install.sh; \
+        chmod +x /tmp/railway-install.sh; \
+        if [ -n "$version" ]; then \
+          RAILWAY_VERSION="$version" RAILWAY_BIN_DIR=/usr/local/bin bash /tmp/railway-install.sh --yes; \
+        else \
+          RAILWAY_BIN_DIR=/usr/local/bin bash /tmp/railway-install.sh --yes; \
+        fi; \
+        rm -f /tmp/railway-install.sh; \
+      }; \
+      for pkg in "$@"; do \
+        case "$pkg" in \
+          -*) echo "Invalid extra npm package spec: $pkg" >&2; exit 1 ;; \
+          @railway/cli|@railway/cli@*) install_railway_cli "$pkg" ;; \
+          *) npm install -g --no-audit --no-fund "$pkg" ;; \
+        esac; \
+      done; \
     fi
 RUN npm cache clean --force
 

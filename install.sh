@@ -152,17 +152,38 @@ collect_custom_npm_packages() {
 }
 
 merge_package_lists() {
-  local base extra pkg merged=""
-  base="$1"
-  extra="$2"
-  for pkg in $base $extra; do
-    [ -n "$pkg" ] || continue
-    case " $merged " in
-      *" $pkg "*) ;;
-      *) merged="${merged:+$merged }$pkg";;
-    esac
+  local merged="" source pkg
+  for source in "$1" "$2"; do
+    while IFS= read -r pkg; do
+      [ -n "$pkg" ] || continue
+      case " $merged " in
+        *" $pkg "*) ;;
+        *) merged="${merged:+$merged }$pkg";;
+      esac
+    done < <(package_list_items "$source")
   done
   printf '%s\n' "$merged"
+}
+
+package_list_items() {
+  local list="$1" item
+  for item in $list; do
+    [ -n "$item" ] && printf '%s\n' "$item"
+  done
+}
+
+valid_package_token() {
+  case "$1" in
+    ""|-*|*[!A-Za-z0-9@._/+~^=-]*) return 1;;
+    *) return 0;;
+  esac
+}
+
+validate_package_list() {
+  local label="$1" list="$2" pkg
+  while IFS= read -r pkg; do
+    valid_package_token "$pkg" || die "Invalid $label package name: '$pkg'"
+  done < <(package_list_items "$list")
 }
 
 npm_package_name() {
@@ -197,6 +218,11 @@ probe_npm_package_version() {
   local pkg out
   pkg="$(npm_package_name "$spec")"
   [ -n "$pkg" ] || return 0
+  if [ "$pkg" = "@railway/cli" ]; then
+    out="$(docker run --rm "$IMAGE" sh -lc "timeout 10 railway --version </dev/null" 2>/dev/null || true)"
+    print_installed_version "npm:$pkg:" "$out"
+    return 0
+  fi
   out="$(
     docker run --rm "$IMAGE" sh -lc \
       "timeout 10 sh -lc 'NPM_ROOT=\$(npm root -g 2>/dev/null); PKG=\"$pkg\" node -e '\''const fs=require(\"fs\"); const path=require(\"path\"); const pkg=process.env.PKG; const root=process.env.NPM_ROOT; if (!pkg || !root) process.exit(0); const file=path.join(root, pkg, \"package.json\"); if (fs.existsSync(file)) process.stdout.write(JSON.parse(fs.readFileSync(file, \"utf8\")).version);'\'' </dev/null'" \
@@ -349,6 +375,8 @@ ENABLED_AGENTS="$(resolve_agents)"
 INSTALL_OVERLORD="$(resolve_overlord_install)"
 CUSTOM_NPM_PACKAGES="$(collect_custom_npm_packages)"
 EXTRA_NPM_PACKAGES="$(merge_package_lists "$EXTRA_NPM_PACKAGES" "$CUSTOM_NPM_PACKAGES")"
+validate_package_list "apt" "$EXTRA_APT_PACKAGES"
+validate_package_list "npm" "$EXTRA_NPM_PACKAGES"
 
 BUILD_ARGS=(
   --build-arg "CLAUDE_CODE_VERSION=$CLAUDE_CODE_VERSION"

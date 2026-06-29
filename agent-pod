@@ -652,12 +652,11 @@ package_config_key() {
 }
 
 valid_package_token() {
-  # Package lists are word-split, unquoted, into `apt-get install` /
-  # `npm install -g` during the image build, so reject anything that isn't a
-  # plausible package spec (no whitespace or shell metacharacters). Allows
-  # scoped npm names and version specs like @scope/pkg@1.2 or pkg~=1.0.
+  # Package lists are split into individual package tokens at build time, so
+  # reject anything that isn't a plausible package spec and disallow leading
+  # dashes to prevent install-option injection.
   case "$1" in
-    ""|*[!A-Za-z0-9@._/+~^=-]*) return 1;;
+    ""|-*|*[!A-Za-z0-9@._/+~^=-]*) return 1;;
     *) return 0;;
   esac
 }

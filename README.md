@@ -210,6 +210,10 @@ AGENT_POD_NPM_PACKAGES="pnpm typescript" \
 ./install.sh
 ```
 
+`@railway/cli` is a special case on Linux ARM64: AgentPod installs it with
+Railway's official installer instead of `npm install -g`, because the npm
+package's postinstall has shipped missing Linux ARM64 release assets.
+
 ### Updating installed CLIs and packages
 
 To refresh the CLIs and packages baked into an existing AgentPod image, run:
