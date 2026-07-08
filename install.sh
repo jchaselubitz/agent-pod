@@ -325,7 +325,7 @@ resolve_overlord_install() {
   fi
 }
 
-# Resolve open-overlord credentials the same way the launcher resolves config:
+# Resolve Overlord CLI credentials the same way the launcher resolves config:
 # an explicit environment variable wins, otherwise fall back to the central
 # config file (~/.agent-pod/.agent-pod.env, or AGENT_POD_ENV_FILE if set).
 # Legacy OVERLORD_AGENT_TOKEN / OVERLORD_URL names are still accepted.

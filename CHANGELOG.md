@@ -15,7 +15,7 @@ All notable changes to this project are documented in this file.
 ### Changed
 
 - Configure `ovld` inside the pod at launch from `OVERLORD_BACKEND_URL` and `OVERLORD_USER_TOKEN`, writing persistent config under the agent's bind-mounted HOME.
-- Switch from `overlord-cli` to the `open-overlord` npm package for `ovld`.
+- Switch from `open-overlord` to the `overlord-cli` npm package for `ovld`.
 - Use `ovld agent-setup` instead of `ovld setup` for connector and permission installation.
 - Store Overlord credentials as `OVERLORD_BACKEND_URL` and `OVERLORD_USER_TOKEN` (legacy `OVERLORD_URL` / `OVERLORD_AGENT_TOKEN` names are still read as fallbacks).
 

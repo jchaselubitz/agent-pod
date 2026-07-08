@@ -114,7 +114,7 @@ truthy() {
   esac
 }
 
-# open-overlord requires an http:// or https:// URL. Users often omit the scheme
+# The Overlord CLI requires an http:// or https:// URL. Users often omit the scheme
 # when pointing at host.docker.internal:4310 from inside a pod.
 normalize_overlord_backend_url() {
   url="${1:-}"
@@ -128,8 +128,8 @@ normalize_overlord_backend_url() {
 # Shell fragment run inside the pod before the agent starts. When
 # OVERLORD_BACKEND_URL is forwarded into the container, write ~/.ovld/overlord.toml
 # via `ovld config set` so `ovld protocol` and related commands target the
-# configured backend. OVERLORD_USER_TOKEN is also honored at runtime by
-# open-overlord; we attempt `ovld auth login --token` so credentials persist in
+# configured backend. OVERLORD_USER_TOKEN is also honored at runtime by the
+# Overlord CLI; we attempt `ovld auth login --token` so credentials persist in
 # the bind-mounted HOME when the backend is reachable.
 overlord_in_pod_bootstrap_fragment() {
   printf '%s' \
@@ -1680,7 +1680,7 @@ for v in \
   [ -n "${!v:-}" ] && ENV_FLAGS+=(-e "$v")
 done
 
-# Map legacy Overlord env names to open-overlord names when only the old keys
+# Map legacy Overlord env names to the current keys when only the old names
 # are present in the config file (docker --env-file does not rename keys).
 overlord_user_token="$(config_value OVERLORD_USER_TOKEN "")"
 [ -z "$overlord_user_token" ] && overlord_user_token="$(config_value OVERLORD_AGENT_TOKEN "")"

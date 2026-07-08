@@ -56,7 +56,7 @@ RUN echo "$APT_CACHEBUST" >/dev/null \
 ARG CACHEBUST=1
 
 # Node-based CLIs: Claude Code, OpenAI Codex, OpenCode, and optional Overlord
-# manager package.
+# CLI package.
 # Installed in separate layers so a single failing package is easy to spot in
 # the build log (and doesn't invalidate the others' cache). --no-audit/--no-fund
 # keep output focused on real errors.
@@ -74,7 +74,7 @@ RUN echo "$CACHEBUST" >/dev/null; \
     fi
 RUN echo "$CACHEBUST" >/dev/null; \
     if [ "$INSTALL_OVERLORD" = "1" ]; then \
-      npm install -g --no-audit --no-fund "open-overlord@${OVERLORD_VERSION}"; \
+      npm install -g --no-audit --no-fund "overlord-cli@${OVERLORD_VERSION}"; \
     fi
 RUN echo "$CACHEBUST" >/dev/null; \
     if [ -n "$EXTRA_NPM_PACKAGES" ]; then \

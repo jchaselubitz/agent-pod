@@ -707,7 +707,7 @@ from the file.
 
 `install.sh` builds a Node-based image that installs the selected npm agent CLIs
 (`@anthropic-ai/claude-code`, `@openai/codex`, `opencode-ai`), optionally
-installs `open-overlord` as an agent manager package, and installs the Cursor
+installs `overlord-cli` as the Overlord CLI package, and installs the Cursor
 Agent via its vendor installer (relocated to a global path).
 
 The `agent-pod` launcher then runs, roughly:
