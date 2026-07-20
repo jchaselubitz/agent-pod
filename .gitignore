@@ -5,3 +5,5 @@
 # Project-local AgentPod secrets
 .agent-pod.env
 agent-pod.env
+
+.DS_Store
