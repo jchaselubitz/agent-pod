@@ -1353,6 +1353,14 @@ injects a task-specific folder right before launch, like Overlord):
   allow; it never replaces or persists them, and it never overrides the mode
   of a path that's already allowed by either of those two sources.
 
+Path entry format (identical for all three sources):
+  <absolute-path>[:rw|:ro]  — comma-separated; no suffix means :rw.
+  Whitespace around entries is trimmed, so "/repo/a:rw, /repo/b:ro" is fine.
+  A service writing AGENT_POD_EXTRA_ALLOWED_PATHS should put an explicit
+  :rw/:ro on EVERY entry rather than relying on the default — the permission
+  is then self-documenting in both the value and the startup log line
+  ("Allowing host path in pod (rw): ...").
+
 Config key written to ~/.agent-pod/.agent-pod.env:
   AGENT_POD_ALLOWED_PATHS=/repo/a,/repo/b:ro     comma-separated existing absolute paths
 
@@ -1360,6 +1368,9 @@ How it mounts:
   • Each allowed path is bind-mounted at the same absolute path inside the
     pod, read/write by default or read-only with a ":ro" suffix.
   • Paths must already exist, must be absolute, and cannot contain commas.
+  • The launch directory (the current project) is ALWAYS mounted read/write;
+    listing it in an allowlist is harmless (it's de-duplicated), and a ":ro"
+    on it is ignored — the agent must be able to write where it runs.
   • All three sources (env/config allowlist, project file, and
     AGENT_POD_EXTRA_ALLOWED_PATHS) are merged for every launch; first match
     wins in that order, so a path's mode is set by whichever source lists it
@@ -1722,7 +1733,13 @@ fi
 # the repo) and the project file .agent-pod-allowed-paths (committed, shared
 # with the team). The env/config source wins when both list the same path.
 FILE_ACCESS_FLAGS=()
-ALLOWED_PATHS_SEEN=""
+# Seed the dedup tracker with the working directory: it is always mounted rw
+# via `-v "$PWD:$PWD"` below, so an allowlist entry naming it (common, since the
+# launch dir is often in the reachable-paths list) must not add a second mount
+# for the same destination — Docker rejects that with "Duplicate mount point".
+# The working dir stays rw even if the allowlist asked for :ro; the agent needs
+# to write where it runs.
+ALLOWED_PATHS_SEEN="$PWD"
 
 add_allowed_path_flag() {
   local entry="$1" source_label="$2" path mode
@@ -1743,6 +1760,11 @@ add_allowed_paths_from_csv() {
   OLDIFS="$IFS"; IFS=','
   for entry in $csv; do
     IFS="$OLDIFS"
+    # Trim per-entry whitespace so a value written by hand or by an external
+    # service can space out entries ("/a:rw, /b:ro") the same way the project
+    # allowlist file already tolerates. Without this a leading space fails the
+    # absolute-path check.
+    entry="$(trim_whitespace "$entry")"
     [ -n "$entry" ] && add_allowed_path_flag "$entry" "$label"
     OLDIFS="$IFS"; IFS=','
   done

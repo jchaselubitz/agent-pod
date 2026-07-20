@@ -515,6 +515,13 @@ bind-mounted at the same absolute path inside new pods — read/write by
 default, or read-only with a `:ro` suffix — and its children come along with
 it.
 
+Every source below uses the same entry format: `<absolute-path>[:rw|:ro]`,
+comma-separated, where no suffix means `:rw`. Whitespace around entries is
+trimmed, so `/repo/a:rw, /repo/b:ro` is accepted. The launch directory is
+always mounted read/write — listing it, or marking it `:ro`, is harmless and
+never makes it read-only, since the agent has to be able to write where it
+runs.
+
 For a single launch:
 
 ```bash
@@ -584,6 +591,14 @@ It merges on top of both the personal config and the project file for that
 one launch, without overriding either, and leaves nothing behind afterward.
 If a path it lists is already allowed by the personal config or the project
 file, that source's mode wins (the variable only adds genuinely new paths).
+
+A service generating this value should put an explicit `:rw` or `:ro` on
+**every** entry rather than relying on the `:rw` default. The granted
+permission is then self-documenting both in the value and in the startup log
+line (`Allowing host path in pod (rw): …`), and it's fine for the service to
+include the launch directory itself in the list — it's de-duplicated against
+the always-present working-directory mount instead of causing a
+`Duplicate mount point` error.
 
 ### Exposing dev-server ports
 
