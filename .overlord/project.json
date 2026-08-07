@@ -1,7 +1,9 @@
 {
-  "version": 1,
+  "_warning": "STRICTLY PROTECTED: This file is managed exclusively by Overlord. Agents and users must not edit, replace, stage, commit, or delete it. Re-link the resource with Overlord to change it.",
+  "version": 2,
   "projectId": "ece28215-0a10-4fa1-adb0-8687e2166565",
-  "resourceId": "2f862ea9-b7f3-49d6-ae9b-9c29027fc4ca",
+  "resourceId": "019c68a1-757b-44d7-ba4b-13793171dc3f",
+  "resourceKey": "agent-pod",
   "isPrimary": true,
-  "linkedAt": "2026-06-29T07:01:04.136Z"
+  "linkedAt": "2026-08-07T09:56:42.644Z"
 }
