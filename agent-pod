@@ -830,6 +830,311 @@ remove_project_allowed_path() {
   mv "$tmp" "$file"
 }
 
+# ---- shared package-manager caches ----------------------------------------
+# Every agent gets its own HOME ($STATE_ROOT/<agent>), which means every agent
+# re-downloads and re-stores the same npm/yarn/cargo/rust artifacts. Those
+# directories dominate AgentPod's disk footprint (tens of GB across a handful of
+# agents) and are 100% regenerable. We bind-mount one shared copy over the same
+# relative path inside each pod's HOME, so all pods hit a single store.
+#
+# Only regenerable, content-addressable caches and toolchain stores belong here.
+# Auth, history, and agent config (.claude, .codex, .config, .ovld, ...) stay
+# per-agent on purpose: they are the whole point of the per-agent HOME.
+#
+# These are shared BETWEEN PODS, not with the host: the host is frequently
+# macOS/arm64 while the pod is linux, so a host .cargo/.rustup/.cache holds
+# binaries the container cannot execute. Host reuse is opt-in per path via
+# AGENT_POD_HOST_CACHES for the platform-neutral ones.
+SHARED_CACHE_DIRNAME=".shared-cache"
+
+default_shared_caches() {
+  # HOME-relative paths, comma-separated.
+  printf '%s\n' ".npm,.npm-global,.cache,.yarn,.cargo,.rustup,.bun,.deno,.local/share/pnpm"
+}
+
+shared_cache_root() {
+  printf '%s\n' "$STATE_ROOT/$SHARED_CACHE_DIRNAME"
+}
+
+# A cache entry is a HOME-relative path: no leading slash, no "..", no commas.
+# Anything else could escape the state root or collide with the HOME mount.
+valid_cache_rel_path() {
+  case "$1" in
+    ""|/*|*,*) return 1;;
+    ..|../*|*/..|*/../*) return 1;;
+    .|./*) return 1;;
+    *) return 0;;
+  esac
+}
+
+# Resolved list of HOME-relative cache paths to share, one per line.
+# Empty when sharing is disabled. Invalid entries are skipped here rather than
+# fatal, because this runs inside a command substitution where `die` could only
+# kill the subshell — validate_cache_config() is what actually rejects them.
+shared_cache_list() {
+  local csv entry
+  truthy "$(config_value AGENT_POD_SHARE_CACHES 1)" || return 0
+  csv="$(config_value AGENT_POD_SHARED_CACHES "$(default_shared_caches)")"
+  OLDIFS="$IFS"; IFS=','
+  for entry in $csv; do
+    IFS="$OLDIFS"
+    entry="$(trim_whitespace "$entry")"
+    if [ -n "$entry" ] && valid_cache_rel_path "$entry"; then
+      printf '%s\n' "$entry"
+    fi
+    OLDIFS="$IFS"; IFS=','
+  done
+  IFS="$OLDIFS"
+}
+
+# Opt-in host cache reuse. Only safe for platform-neutral stores (npm's
+# _cacache and yarn's berry cache hold plain tarballs/zips); anything holding
+# compiled binaries will be the wrong architecture inside the pod.
+host_cache_list() {
+  local csv entry
+  csv="$(config_value AGENT_POD_HOST_CACHES "")"
+  OLDIFS="$IFS"; IFS=','
+  for entry in $csv; do
+    IFS="$OLDIFS"
+    entry="$(trim_whitespace "$entry")"
+    if [ -n "$entry" ] && valid_cache_rel_path "$(allowed_path_entry_path "$entry")"; then
+      printf '%s\n' "$entry"
+    fi
+    OLDIFS="$IFS"; IFS=','
+  done
+  IFS="$OLDIFS"
+}
+
+# Must be called from the current shell (never inside `$(...)`) so a bad config
+# value aborts instead of silently dropping a cache path from the mount list.
+validate_cache_config() {
+  local csv entry
+  csv="$(config_value AGENT_POD_SHARED_CACHES "$(default_shared_caches)")"
+  OLDIFS="$IFS"; IFS=','
+  for entry in $csv; do
+    IFS="$OLDIFS"
+    entry="$(trim_whitespace "$entry")"
+    if [ -n "$entry" ] && ! valid_cache_rel_path "$entry"; then
+      die "Invalid AGENT_POD_SHARED_CACHES entry '$entry'. Use HOME-relative paths like '.npm' or '.local/share/pnpm'."
+    fi
+    OLDIFS="$IFS"; IFS=','
+  done
+  IFS="$OLDIFS"
+
+  csv="$(config_value AGENT_POD_HOST_CACHES "")"
+  OLDIFS="$IFS"; IFS=','
+  for entry in $csv; do
+    IFS="$OLDIFS"
+    entry="$(trim_whitespace "$entry")"
+    if [ -n "$entry" ] && ! valid_cache_rel_path "$(allowed_path_entry_path "$entry")"; then
+      die "Invalid AGENT_POD_HOST_CACHES entry '$entry'. Use HOME-relative paths like '.npm' or '.yarn:ro'."
+    fi
+    OLDIFS="$IFS"; IFS=','
+  done
+  IFS="$OLDIFS"
+}
+
+dir_is_empty() {
+  [ -d "$1" ] || return 0
+  [ -z "$(ls -A "$1" 2>/dev/null)" ]
+}
+
+# Size of a directory in KB (0 when missing/unreadable), portable across macOS
+# and Linux. Never fails: a du error must not abort a launch under `set -e`.
+dir_size_kb() {
+  local kb
+  [ -d "$1" ] || { printf '0\n'; return 0; }
+  kb="$(du -sk "$1" 2>/dev/null | awk '{print $1; exit}' || true)"
+  case "$kb" in
+    ""|*[!0-9]*) kb=0;;
+  esac
+  printf '%s\n' "$kb"
+}
+
+human_kb() {
+  awk -v kb="${1:-0}" 'BEGIN {
+    split("KB MB GB TB", u, " ");
+    i = 1;
+    while (kb >= 1024 && i < 4) { kb /= 1024; i++ }
+    printf (kb >= 10 || i == 1) ? "%.0f%s\n" : "%.1f%s\n", kb, u[i];
+  }'
+}
+
+# Directories under STATE_ROOT that are agent HOMEs. Agent ids must start with a
+# lowercase letter, so the dot-prefixed shared cache root can never be one.
+agent_state_dirs() {
+  local dir name
+  [ -d "$STATE_ROOT" ] || return 0
+  for dir in "$STATE_ROOT"/*; do
+    [ -d "$dir" ] || continue
+    name="$(basename "$dir")"
+    valid_agent_id "$name" || continue
+    printf '%s\n' "$dir"
+  done
+}
+
+# Move an agent's existing cache into the shared root the first time we see it,
+# so the very first launch after upgrading keeps (rather than re-downloads) the
+# warm cache. Only ever moves into an absent/empty shared target, and only with
+# a rename — never a multi-gigabyte copy behind the user's back.
+adopt_shared_cache() {
+  local own="$1" shared="$2"
+  [ -d "$own" ] || return 1
+  dir_is_empty "$own" && return 1
+  [ -e "$shared" ] && ! dir_is_empty "$shared" && return 1
+  mkdir -p "$(dirname "$shared")" 2>/dev/null || return 1
+  # rmdir only succeeds on an empty dir, so this cannot destroy a populated one.
+  [ -d "$shared" ] && { rmdir "$shared" 2>/dev/null || return 1; }
+  mv "$own" "$shared" 2>/dev/null || return 1
+  return 0
+}
+
+run_cache() {
+  local action="${1:-status}"
+  [ $# -gt 0 ] && shift || true
+  local assume_yes=0 arg
+  for arg in "$@"; do
+    case "$arg" in
+      -y|--yes) assume_yes=1;;
+      *) die "Usage: agent-pod cache [status|migrate|clean|clear|on|off] [--yes]";;
+    esac
+  done
+
+  local shared_root rel shared own total_shared total_dup kb
+  validate_cache_config
+  shared_root="$(shared_cache_root)"
+
+  case "$action" in
+    status|"")
+      if truthy "$(config_value AGENT_POD_SHARE_CACHES 1)"; then
+        ok "Shared caches are enabled."
+      else
+        warn "Shared caches are DISABLED (AGENT_POD_SHARE_CACHES=0); every agent keeps its own copy."
+      fi
+      info "Shared cache root: $shared_root"
+      total_shared=0
+      total_dup=0
+      local total_unshared=0 seeded note
+      while IFS= read -r rel; do
+        [ -n "$rel" ] || continue
+        shared="$shared_root/$rel"
+        kb="$(dir_size_kb "$shared")"
+        total_shared=$((total_shared + kb))
+        # A per-agent copy is only reclaimable once a populated shared copy
+        # exists to take its place; before that it is the cache, not a duplicate.
+        if [ "$kb" -gt 0 ]; then seeded=1; note="shadowed duplicate"; else seeded=0; note="not shared yet"; fi
+        printf '  %-22s shared %8s\n' "$rel" "$(human_kb "$kb")" >&2
+        while IFS= read -r own; do
+          [ -n "$own" ] || continue
+          [ -d "$own/$rel" ] || continue
+          dir_is_empty "$own/$rel" && continue
+          kb="$(dir_size_kb "$own/$rel")"
+          if [ "$seeded" -eq 1 ]; then
+            total_dup=$((total_dup + kb))
+          else
+            total_unshared=$((total_unshared + kb))
+          fi
+          printf '      %-18s %8s  (%s)\n' "$(basename "$own")" "$(human_kb "$kb")" "$note" >&2
+        done <<< "$(agent_state_dirs)"
+      done <<< "$(shared_cache_list)"
+      info "Shared total:      $(human_kb "$total_shared")"
+      if [ "$total_unshared" -gt 0 ]; then
+        warn "Not yet shared:    $(human_kb "$total_unshared") still held in per-agent copies."
+        info "Consolidate with:  agent-pod cache migrate"
+      fi
+      if [ "$total_dup" -gt 0 ]; then
+        warn "Reclaimable:       $(human_kb "$total_dup") in per-agent copies the shared mount now hides."
+        info "Reclaim it with:   agent-pod cache clean"
+      fi
+      ;;
+
+    migrate|adopt)
+      # Seed each shared cache from the largest existing per-agent copy (a
+      # rename, so it is instant and lossless), then the rest are redundant.
+      while IFS= read -r rel; do
+        [ -n "$rel" ] || continue
+        shared="$shared_root/$rel"
+        if [ -d "$shared" ] && ! dir_is_empty "$shared"; then
+          info "$rel: shared copy already present."
+          continue
+        fi
+        local best="" best_kb=0
+        while IFS= read -r own; do
+          [ -n "$own" ] || continue
+          [ -d "$own/$rel" ] || continue
+          kb="$(dir_size_kb "$own/$rel")"
+          if [ "$kb" -gt "$best_kb" ]; then best_kb="$kb"; best="$own/$rel"; fi
+        done <<< "$(agent_state_dirs)"
+        if [ -n "$best" ] && adopt_shared_cache "$best" "$shared"; then
+          mkdir -p "$best" 2>/dev/null || true
+          ok "$rel: adopted $(human_kb "$best_kb") from $(basename "$(dirname "$best")")."
+        else
+          info "$rel: nothing to adopt."
+        fi
+      done <<< "$(shared_cache_list)"
+      info "Run 'agent-pod cache clean' to delete the now-redundant per-agent copies."
+      ;;
+
+    clean)
+      total_dup=0
+      local -a victims=()
+      while IFS= read -r rel; do
+        [ -n "$rel" ] || continue
+        shared="$shared_root/$rel"
+        # Only delete a per-agent copy once a populated shared copy exists to
+        # replace it; otherwise cleaning would throw the cache away outright.
+        { [ -d "$shared" ] && ! dir_is_empty "$shared"; } || continue
+        while IFS= read -r own; do
+          [ -n "$own" ] || continue
+          [ -d "$own/$rel" ] || continue
+          dir_is_empty "$own/$rel" && continue
+          kb="$(dir_size_kb "$own/$rel")"
+          total_dup=$((total_dup + kb))
+          victims+=("$own/$rel")
+          printf '  %-40s %8s\n' "${own#$STATE_ROOT/}/$rel" "$(human_kb "$kb")" >&2
+        done <<< "$(agent_state_dirs)"
+      done <<< "$(shared_cache_list)"
+      if [ "${#victims[@]}" -eq 0 ]; then
+        ok "Nothing to clean — no per-agent copies are shadowed by a shared cache."
+        return 0
+      fi
+      info "This deletes $(human_kb "$total_dup") of per-agent cache copies already replaced by the shared cache."
+      if [ "$assume_yes" -ne 1 ]; then
+        prompt_yes_no "Delete these ${#victims[@]} directories?" "no" || { info "Aborted."; return 0; }
+      fi
+      for own in "${victims[@]}"; do
+        rm -rf "$own" && mkdir -p "$own" 2>/dev/null || true
+      done
+      ok "Reclaimed $(human_kb "$total_dup")."
+      ;;
+
+    clear)
+      [ -d "$shared_root" ] || { ok "Shared cache root is already empty."; return 0; }
+      kb="$(dir_size_kb "$shared_root")"
+      info "This deletes the entire shared cache ($(human_kb "$kb")); pods will re-download on next use."
+      if [ "$assume_yes" -ne 1 ]; then
+        prompt_yes_no "Delete $shared_root?" "no" || { info "Aborted."; return 0; }
+      fi
+      rm -rf "$shared_root"
+      ok "Cleared $(human_kb "$kb")."
+      ;;
+
+    on|enable)
+      env_file="$(ensure_config_file)"
+      upsert_env_var "$env_file" AGENT_POD_SHARE_CACHES 1
+      ok "Shared caches enabled for future AgentPod launches."
+      ;;
+
+    off|disable)
+      env_file="$(ensure_config_file)"
+      upsert_env_var "$env_file" AGENT_POD_SHARE_CACHES 0
+      ok "Shared caches disabled; each agent will use its own HOME copy again."
+      ;;
+
+    *) die "Usage: agent-pod cache [status|migrate|clean|clear|on|off] [--yes]";;
+  esac
+}
+
 run_file_access() {
   [ $# -ge 1 ] || set -- list
   current="$(config_value AGENT_POD_ALLOWED_PATHS "")"
@@ -1215,6 +1520,7 @@ Topics:
   agent-pod protocol packages   Bake apt/npm tools into the sandbox image
   agent-pod protocol files      Allowlist extra host file paths to mount
   agent-pod protocol docker     Reach other containers (e.g. local Supabase)
+  agent-pod protocol cache      Shared package caches and reclaiming disk space
   agent-pod protocol skills     Where the packaged agent skills live / install them
   agent-pod protocol help       This overview
 
@@ -1438,6 +1744,57 @@ Notes:
 EOF
 }
 
+protocol_cache() {
+  cat <<EOF
+agent-pod cache — shared package-manager caches and disk usage
+
+Every agent runs with its own HOME on the host ($STATE_ROOT/<agent>), which keeps
+auth, history, and agent config properly isolated. Without help it ALSO gives
+every agent its own copy of every package-manager cache, so the same npm tarballs,
+yarn zips, crates, and rust toolchains get downloaded and stored once per agent.
+That duplication is what makes AgentPod's footprint grow into tens of gigabytes.
+
+AgentPod now bind-mounts ONE shared copy of those caches over the same path in
+every pod's HOME. Nothing else is shared: .claude, .codex, .config, .ovld and the
+rest of each agent's state stay private to that agent.
+
+Commands:
+  agent-pod cache                 Show shared cache sizes and reclaimable space
+  agent-pod cache migrate         Seed the shared cache from existing per-agent copies
+  agent-pod cache clean           Delete per-agent copies the shared cache replaced
+  agent-pod cache clear           Empty the shared cache (pods re-download on demand)
+  agent-pod cache off             Go back to a private cache per agent
+  agent-pod cache on              Re-enable sharing
+
+Shared by default (HOME-relative):
+  $(default_shared_caches | tr ',' ' ')
+
+Config keys written to ~/.agent-pod/.agent-pod.env:
+  AGENT_POD_SHARE_CACHES=1        master switch (default on)
+  AGENT_POD_SHARED_CACHES=.npm,.cache,...
+                                  override the shared list entirely
+  AGENT_POD_HOST_CACHES=          opt-in reuse of the HOST's own caches (default: none)
+
+Reusing the host's caches (AGENT_POD_HOST_CACHES):
+  Entries are HOME-relative paths with an optional :ro/:rw suffix, e.g.
+      AGENT_POD_HOST_CACHES=.npm,.yarn:ro
+  which mounts ~/.npm and ~/.yarn from the host into every pod. Use this ONLY for
+  stores whose contents are platform-neutral — npm's _cacache and yarn berry's
+  cache hold plain tarballs/zips and are safe. Do NOT do it for .cargo, .rustup,
+  .cache, .bun, or .npm-global when the host is macOS/Windows and the pod is
+  linux: those hold compiled binaries for the host's architecture and the pod
+  will fail to execute them. A host entry replaces the shared-cache mount for
+  that same path.
+
+Notes:
+  • Mounts apply to NEW pods; restart the pod after changing any of this.
+  • The first launch after upgrading renames an agent's existing cache into the
+    shared store, so a warm cache is kept rather than re-downloaded. Later agents
+    see their own copies shadowed — 'agent-pod cache clean' reclaims that space.
+  • Caches are regenerable. Deleting any of them only costs a re-download.
+EOF
+}
+
 protocol_skills() {
   dir="$(skills_dir)"
   case "${1:-}" in
@@ -1488,6 +1845,7 @@ run_protocol() {
     packages|package|deps|dependencies) protocol_packages;;
     files|file|file-access|paths|mounts|allowlist) protocol_files;;
     docker|docker-access|containers|network|networking|supabase) protocol_docker;;
+    cache|caches|storage|disk) protocol_cache;;
     skills|skill) protocol_skills "$@";;
     *) die "Unknown protocol topic '$topic'. Run: agent-pod protocol help";;
   esac
@@ -1512,12 +1870,14 @@ Usage:
                                   Remove custom packages from the image
   agent-pod file-access [list|add|remove|clear] [--project] <path[:ro]>
                                   Allowlist extra host paths for new pods
+  agent-pod cache [status|migrate|clean|clear|on|off]
+                                  Inspect and reclaim shared package-manager caches
   agent-pod docker-access [on|off|status]
                                   Show or toggle host Docker socket mounting
   agent-pod network [<name>|off|status]
                                   Attach launched pods to a Docker network
   agent-pod protocol [topic]     Agent-facing help for configuring the sandbox
-                                  (topics: agents, packages, files, docker, skills)
+                                  (topics: agents, packages, files, docker, cache, skills)
   agent-pod edit-env             Open the active env file in your editor
   agent-pod install-image        Build the Docker image used by agent-pod
   agent-pod update-image         Refresh CLIs and packages in the Docker image
@@ -1600,6 +1960,7 @@ case "$1" in
   package-add|add-package) shift; run_package_add "$@"; exit 0;;
   package-remove|remove-package) shift; run_package_remove "$@"; exit 0;;
   file-access|files|allowlist) shift; run_file_access "$@"; exit 0;;
+  cache|caches|storage|disk) shift; run_cache "$@"; exit 0;;
   docker-access) shift; run_docker_access "$@"; exit 0;;
   network) shift; run_network "$@"; exit 0;;
   protocol) shift; run_protocol "$@"; exit 0;;
@@ -1644,6 +2005,59 @@ mkdir -p "$STATE_DIR"
 mkdir -p "$STATE_DIR/.npm-global"
 # Owner-only: this holds auth tokens and conversation transcripts.
 chmod 700 "$STATE_ROOT" "$STATE_DIR" 2>/dev/null || true
+
+# ---- opt-in host cache reuse ----------------------------------------------
+# Off by default: only stores holding platform-neutral artifacts are safe to
+# share with a host that may be a different OS/architecture than the pod.
+# Processed first so an explicit host entry wins over the shared-cache default
+# for the same path — two mounts on one destination is a hard Docker error.
+validate_cache_config
+HOST_CACHE_FLAGS=()
+HOST_CACHE_RELS=""
+while IFS= read -r host_entry; do
+  [ -n "$host_entry" ] || continue
+  host_rel="$(allowed_path_entry_path "$host_entry")"
+  host_mode="$(allowed_path_entry_mode "$host_entry")"
+  host_src="$HOME/$host_rel"
+  [ -d "$host_src" ] || { warn "Skipping AGENT_POD_HOST_CACHES entry (not found on host): ~/$host_rel"; continue; }
+  path_in_csv_list "$host_rel" "$HOST_CACHE_RELS" && continue
+  HOST_CACHE_RELS="${HOST_CACHE_RELS:+$HOST_CACHE_RELS,}$host_rel"
+  mkdir -p "$STATE_DIR/$host_rel" 2>/dev/null || true
+  HOST_CACHE_FLAGS+=(-v "$host_src:$CONTAINER_HOME/$host_rel:$host_mode")
+  info "Sharing host cache in pod ($host_mode): ~/$host_rel"
+done <<< "$(host_cache_list)"
+
+# ---- shared package-manager caches ----------------------------------------
+# Nested bind mounts layered on top of the HOME mount below. Docker applies
+# mounts shallowest-destination first, so $CONTAINER_HOME lands before
+# $CONTAINER_HOME/.npm and each cache path resolves to the shared store instead
+# of this agent's private copy.
+SHARED_CACHE_FLAGS=()
+SHARED_CACHE_ROOT="$(shared_cache_root)"
+SHADOWED_CACHE_COUNT=0
+while IFS= read -r cache_rel; do
+  [ -n "$cache_rel" ] || continue
+  path_in_csv_list "$cache_rel" "$HOST_CACHE_RELS" && continue
+  shared_dir="$SHARED_CACHE_ROOT/$cache_rel"
+  own_dir="$STATE_DIR/$cache_rel"
+  # First launch after upgrading: hand this agent's warm cache to the shared
+  # store by renaming it, so nothing has to be re-downloaded.
+  if adopt_shared_cache "$own_dir" "$shared_dir"; then
+    info "Adopted $cache_rel into the shared cache."
+  elif [ -d "$own_dir" ] && ! dir_is_empty "$own_dir"; then
+    SHADOWED_CACHE_COUNT=$((SHADOWED_CACHE_COUNT + 1))
+  fi
+  # Pre-create both ends so Docker never has to materialize a mount point
+  # itself (which would create it root-owned inside the bind-mounted HOME).
+  mkdir -p "$shared_dir" "$own_dir" 2>/dev/null || true
+  SHARED_CACHE_FLAGS+=(-v "$shared_dir:$CONTAINER_HOME/$cache_rel")
+done <<< "$(shared_cache_list)"
+if [ -d "$SHARED_CACHE_ROOT" ]; then
+  chmod 700 "$SHARED_CACHE_ROOT" 2>/dev/null || true
+fi
+if [ "$SHADOWED_CACHE_COUNT" -gt 0 ]; then
+  warn "$SHADOWED_CACHE_COUNT per-agent cache dir(s) are shadowed by the shared cache; reclaim that space with: agent-pod cache clean"
+fi
 
 # ---- git identity (written to the container's ~/.gitconfig) ---------------
 GIT_USER_EMAIL_VALUE="$(config_value GIT_USER_EMAIL "")"
@@ -1862,6 +2276,8 @@ exec docker run --rm \
   -e NPM_CONFIG_PREFIX="$CONTAINER_NPM_PREFIX" \
   -e PATH="$CONTAINER_PATH" \
   -v "$STATE_DIR:$CONTAINER_HOME" \
+  "${SHARED_CACHE_FLAGS[@]}" \
+  "${HOST_CACHE_FLAGS[@]}" \
   -v "$PWD:$PWD" \
   -w "$PWD" \
   "${PORT_FLAGS[@]}" \

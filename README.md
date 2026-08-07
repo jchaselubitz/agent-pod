@@ -403,6 +403,58 @@ Each agent (built-in or custom) gets its own persisted state directory at
 `~/.agent-pod/<agent-id>/`. Auth, history, and config for custom agents persist
 the same way as for Claude or Codex.
 
+### Disk usage and shared caches
+
+Per-agent `HOME` directories keep auth and history properly isolated, but taken
+literally they also give every agent its own copy of every package-manager
+cache. Those caches — not agent state — are what make `~/.agent-pod` grow into
+tens of gigabytes: a single `.npm`, `.cache`, `.yarn`, `.cargo`, and `.rustup`
+tree can be several GB, and it was previously stored once *per agent*.
+
+AgentPod now bind-mounts **one shared copy** of each of those caches over the
+same path inside every pod's `HOME`. Agent state (`.claude`, `.codex`,
+`.config`, `.ovld`, ...) is never shared.
+
+Shared by default (all `HOME`-relative):
+`.npm`, `.npm-global`, `.cache`, `.yarn`, `.cargo`, `.rustup`, `.bun`, `.deno`,
+`.local/share/pnpm`.
+
+```bash
+agent-pod cache            # sizes of the shared cache + reclaimable per-agent copies
+agent-pod cache migrate    # seed the shared cache from existing per-agent copies
+agent-pod cache clean      # delete the per-agent copies the shared cache replaced
+agent-pod cache clear      # empty the shared cache (pods re-download on demand)
+agent-pod cache off        # go back to a private cache per agent
+```
+
+On an existing install, the first launch of each agent renames that agent's
+cache into the shared store, so a warm cache is kept rather than re-downloaded.
+Later agents find their own copies shadowed by the shared mount;
+`agent-pod cache clean` reclaims that space. Running `agent-pod cache migrate`
+once does the same thing for every agent up front, seeding each shared cache
+from the largest existing copy.
+
+Everything shared here is regenerable — deleting any of it only costs a
+re-download.
+
+#### Reusing the host's caches
+
+Sharing between pods is the default because it is always safe. Sharing with the
+**host** is opt-in per path, since the host is often macOS/arm64 while the pod is
+linux:
+
+```bash
+# in ~/.agent-pod/.agent-pod.env
+AGENT_POD_HOST_CACHES=.npm,.yarn:ro
+```
+
+Entries are `HOME`-relative with an optional `:ro`/`:rw` suffix, and a host entry
+replaces the shared-cache mount for that same path. Only use it for stores whose
+contents are platform-neutral — npm's `_cacache` and yarn berry's cache hold
+plain tarballs and zips. Do **not** list `.cargo`, `.rustup`, `.cache`, `.bun`,
+or `.npm-global` when the host and pod differ in OS or architecture: those hold
+compiled binaries the pod cannot execute.
+
 ### Inspecting configuration
 
 ```bash
@@ -702,6 +754,9 @@ agent-pod network supabase_network_<project>
 | `GIT_USER_NAME` | _(none)_ | Git `user.name` written into the container's `~/.gitconfig` |
 | `AGENT_POD_IMAGE` | `agent-pod` | Image name to build/run |
 | `AGENT_POD_HOME` | `~/.agent-pod` | Where per-agent state is stored |
+| `AGENT_POD_SHARE_CACHES` | `1` | Set to `0` to give every agent its own package-manager caches again (manage with `agent-pod cache`) |
+| `AGENT_POD_SHARED_CACHES` | `.npm,.npm-global,.cache,.yarn,.cargo,.rustup,.bun,.deno,.local/share/pnpm` | Comma-separated `HOME`-relative paths mounted from one shared store into every pod |
+| `AGENT_POD_HOST_CACHES` | _(none)_ | Opt-in: comma-separated `HOME`-relative paths (optional `:ro`/`:rw`) mounted from the **host's** home into every pod. Safe only for platform-neutral stores such as `.npm` and `.yarn` |
 | `AGENT_POD_AUTO_PRUNE` | `1` | Set to `0` to disable periodic stopped-container pruning |
 | `AGENT_POD_PRUNE_INTERVAL_HOURS` | `24` | How often launches try automatic pruning; `0` means every launch |
 | `AGENT_POD_PRUNE_UNTIL_HOURS` | `24` | Auto-prune stopped AgentPod containers older than this; `0` means all stopped AgentPod containers |
@@ -735,6 +790,9 @@ docker run --rm -i [-t] \
   -e NPM_CONFIG_PREFIX=/home/agent-pod/.npm-global \
   [--env-file ~/.agent-pod/.agent-pod.env] \
   -v ~/.agent-pod/<agent>:/home/agent-pod \   # persisted auth + history
+  -v ~/.agent-pod/.shared-cache/.npm:/home/agent-pod/.npm \   # shared caches,
+  -v ~/.agent-pod/.shared-cache/.cache:/home/agent-pod/.cache \  # one copy for
+  ...                                                            # all agents
   -v "$PWD:$PWD" -w "$PWD" \                   # only the current project
   [-v /allowed/path:/allowed/path] \            # explicit extra file access
   [-v /var/run/docker.sock:/var/run/docker.sock] \
@@ -746,9 +804,16 @@ Each agent gets its own `HOME` (`~/.agent-pod/<agent>`), so whatever paths a
 given CLI uses for config/auth/history (`~/.claude*`, `~/.codex`,
 `~/.config/opencode`, `~/.cursor`, ...) all persist uniformly.
 
-Runtime npm global installs use `~/.agent-pod/<agent>/.npm-global`, which keeps
-agent self-updates writable for the non-root container user and persistent
-across runs.
+Package-manager caches and toolchain stores are then mounted *on top* of that
+`HOME` from a single shared directory (`~/.agent-pod/.shared-cache/`). Docker
+applies bind mounts shallowest-destination-first, so `/home/agent-pod` lands
+before `/home/agent-pod/.npm` and each cache path resolves to the shared store
+rather than the agent's private copy. See
+[Disk usage and shared caches](#disk-usage-and-shared-caches).
+
+Runtime npm global installs use `/home/agent-pod/.npm-global` (shared by
+default), which keeps agent self-updates writable for the non-root container
+user and persistent across runs.
 
 ## Uninstall
 
