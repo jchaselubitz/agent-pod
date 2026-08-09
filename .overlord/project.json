@@ -4,6 +4,9 @@
   "projectId": "ece28215-0a10-4fa1-adb0-8687e2166565",
   "resourceId": "ec7f5722-9987-4ffa-8a32-f825c4c6eb85",
   "resourceKey": "agent-pod",
+  "resourceIdsByExecutionTarget": {
+    "cf857924-0eb4-447d-b999-307c1411f094": "ec7f5722-9987-4ffa-8a32-f825c4c6eb85"
+  },
   "isPrimary": true,
-  "linkedAt": "2026-08-09T08:10:35.533Z"
+  "linkedAt": "2026-08-09T14:33:11.930Z"
 }

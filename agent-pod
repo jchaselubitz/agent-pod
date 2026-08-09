@@ -130,7 +130,10 @@ normalize_overlord_backend_url() {
 # via `ovld config set` so `ovld protocol` and related commands target the
 # configured backend. OVERLORD_USER_TOKEN is also honored at runtime by the
 # Overlord CLI; we attempt `ovld auth login --token` so credentials persist in
-# the bind-mounted HOME when the backend is reachable.
+# the bind-mounted HOME when the backend is reachable. Bootstrap commands must
+# never inherit the launcher's stdin: some CLI versions prompt even with their
+# nominally non-interactive flags, and those invisible prompts would otherwise
+# consume input before the requested agent or shell starts.
 overlord_in_pod_bootstrap_fragment() {
   printf '%s' \
     'if command -v ovld >/dev/null 2>&1; then ' \
@@ -141,9 +144,9 @@ overlord_in_pod_bootstrap_fragment() {
     'export OVERLORD_BACKEND_URL="$backend_url"; ' \
     'case "$backend_url" in ' \
     '*://127.0.0.1:*|*://127.0.0.1|*://localhost:*|*://localhost|*://host.docker.internal:*|*://host.docker.internal) ' \
-    'ovld config set local "$backend_url" >/dev/null 2>&1 || true;; ' \
-    '*) ovld config set cloud "$backend_url" >/dev/null 2>&1 || true;; esac; ' \
-    'if [ -n "$user_token" ]; then ovld auth login --token "$user_token" >/dev/null 2>&1 || true; fi; ' \
+    'ovld config set local "$backend_url" </dev/null >/dev/null 2>&1 || true;; ' \
+    '*) ovld config set cloud "$backend_url" </dev/null >/dev/null 2>&1 || true;; esac; ' \
+    'if [ -n "$user_token" ]; then ovld auth login --token "$user_token" </dev/null >/dev/null 2>&1 || true; fi; ' \
     'fi; fi; '
 }
 
@@ -2373,7 +2376,7 @@ if [ -n "$overlord_backend_url" ]; then
   BOOTSTRAP="$(overlord_in_pod_bootstrap_fragment)"
 fi
 if [ -n "$OVLD_SETUP_TARGET" ]; then
-  BOOTSTRAP="${BOOTSTRAP}if command -v ovld >/dev/null 2>&1; then ovld agent-setup $OVLD_SETUP_TARGET >&2 || true; fi; "
+  BOOTSTRAP="${BOOTSTRAP}if command -v ovld >/dev/null 2>&1; then ovld agent-setup $OVLD_SETUP_TARGET </dev/null >&2 || true; fi; "
 fi
 
 # Claude Code's Bun-built Linux arm64 binary can bus-error when Docker starts

@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented in this file.
 
+## [2.3.0] - 2026-08-09:14:43
+
+### Added
+
+- None.
+
+### Fixed
+
+- Overlord in-pod bootstrap (`ovld config set`, `ovld auth login`, `ovld agent-setup`) no longer inherits the launcher's stdin. Some CLI versions prompt even with non-interactive flags; those invisible prompts were consuming input before the requested agent or shell started.
+
+### Changed
+
+- None.
+
+### Security
+
+- None.
+
 ## [2.2.0] - 2026-08-09:13:22
 
 ### Added
