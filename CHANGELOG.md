@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## [Unreleased]
+## [2.2.0] - 2026-08-09:13:22
 
 ### Added
 
@@ -12,6 +12,7 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- Claude Code no longer prompts for a browser login in pods that already hold a Claude credential (`CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, or `ANTHROPIC_AUTH_TOKEN`). Claude Code gates its first-run onboarding — theme picker, then the login screen — on `hasCompletedOnboarding` in `~/.claude.json` rather than on whether it can already authenticate, and those credentials set no such flag, so every fresh per-agent HOME re-onboarded and asked the user to sign in. AgentPod now marks onboarding complete in the pod's HOME when a Claude credential is present. Opt out with `AGENT_POD_CLAUDE_SKIP_ONBOARDING=0`.
 - Removed `.npm-global` from the shared cache list. It is npm's install prefix, not a cache: sharing it let concurrent pods race to install an agent CLI's self-update into one directory and swap the binary out from under running sessions.
 
 ### Changed
@@ -25,6 +26,7 @@ All notable changes to this project are documented in this file.
 ### Documentation
 
 - Document the shared codex login, `AGENT_POD_SHARE_CODEX_AUTH`, and `AGENT_POD_AGENT_AUTOUPDATE` in `.agent-pod.env.example`.
+- Document `AGENT_POD_CLAUDE_SKIP_ONBOARDING` in `.agent-pod.env.example`.
 
 ## [1.26.0] - 2026-08-07:09:44
 

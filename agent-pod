@@ -879,6 +879,73 @@ shared_auth_root() {
   printf '%s\n' "$STATE_ROOT/$SHARED_AUTH_DIRNAME"
 }
 
+# ---- Claude Code first-run onboarding -------------------------------------
+# Claude Code gates its onboarding — theme picker, then a browser OAuth login —
+# on `hasCompletedOnboarding` in $HOME/.claude.json, not on whether it already
+# has usable credentials. A forwarded CLAUDE_CODE_OAUTH_TOKEN authenticates API
+# calls but never writes that flag, so an interactive pod that is fully
+# authenticated still opens by asking the user to log in, and asks again under
+# every agent name, since each one gets its own HOME. Seed the flag so the
+# token is actually used.
+#
+# Only when a credential is present: with nothing to fall back on, skipping
+# onboarding would move the login prompt somewhere less obvious rather than
+# remove it.
+claude_credential_available() {
+  local v
+  for v in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; do
+    [ -n "$(config_value "$v" "")" ] && return 0
+  done
+  return 1
+}
+
+# Merge `"hasCompletedOnboarding": true` into an existing .claude.json, via a
+# temp file and rename so a pod writing the same file concurrently sees either
+# the old or the new content, never a half-written one. Needs a JSON parser:
+# the file is Claude Code's, and hand-editing it with sed would eventually
+# corrupt someone's config.
+merge_claude_onboarding_flag() {
+  local file="$1" tmp="$1.agent-pod.tmp"
+  if command -v node >/dev/null 2>&1; then
+    node -e '
+      const fs = require("fs");
+      const [file, tmp] = process.argv.slice(1);
+      const data = JSON.parse(fs.readFileSync(file, "utf8"));
+      data.hasCompletedOnboarding = true;
+      fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", { mode: 0o600 });
+      fs.renameSync(tmp, file);
+    ' "$file" "$tmp" 2>/dev/null && return 0
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c '
+import json, os, sys
+file, tmp = sys.argv[1], sys.argv[2]
+with open(file) as fh:
+    data = json.load(fh)
+data["hasCompletedOnboarding"] = True
+with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+    json.dump(data, fh, indent=2)
+    fh.write("\n")
+os.rename(tmp, file)
+' "$file" "$tmp" 2>/dev/null && return 0
+  fi
+  rm -f "$tmp" 2>/dev/null || true
+  return 1
+}
+
+seed_claude_onboarding() {
+  local file="$STATE_DIR/.claude.json"
+  truthy "$(config_value AGENT_POD_CLAUDE_SKIP_ONBOARDING 1)" || return 0
+  claude_credential_available || return 0
+  if [ ! -e "$file" ]; then
+    printf '{\n  "hasCompletedOnboarding": true\n}\n' > "$file" || return 0
+    chmod 600 "$file" 2>/dev/null || true
+    return 0
+  fi
+  grep -Eq '"hasCompletedOnboarding"[[:space:]]*:[[:space:]]*true' "$file" 2>/dev/null && return 0
+  merge_claude_onboarding_flag "$file" \
+    || warn "Could not pre-complete Claude Code onboarding in $file (needs node or python3); claude may prompt to log in despite CLAUDE_CODE_OAUTH_TOKEN."
+}
+
 # A cache entry is a HOME-relative path: no leading slash, no "..", no commas.
 # Anything else could escape the state root or collide with the HOME mount.
 valid_cache_rel_path() {
@@ -2029,6 +2096,9 @@ mkdir -p "$STATE_DIR"
 mkdir -p "$STATE_DIR/.npm-global"
 # Owner-only: this holds auth tokens and conversation transcripts.
 chmod 700 "$STATE_ROOT" "$STATE_DIR" 2>/dev/null || true
+# Runs for every agent, not just `claude`: any pod can invoke the claude CLI,
+# and each agent name has its own HOME to onboard.
+seed_claude_onboarding
 
 # ---- opt-in host cache reuse ----------------------------------------------
 # Off by default: only stores holding platform-neutral artifacts are safe to
