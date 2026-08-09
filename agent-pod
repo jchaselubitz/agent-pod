@@ -841,6 +841,13 @@ remove_project_allowed_path() {
 # Auth, history, and agent config (.claude, .codex, .config, .ovld, ...) stay
 # per-agent on purpose: they are the whole point of the per-agent HOME.
 #
+# .npm-global is deliberately NOT shared. It is $NPM_CONFIG_PREFIX, an install
+# prefix holding live binaries, not a cache: it is where an agent CLI's own
+# updater writes when it updates itself. Sharing it lets concurrent pods race
+# to npm-install the same package into one directory and swap the binary out
+# from under running sessions. Agent CLI versions come from the image instead
+# (`agent-pod update-image`), which is why we also pin DISABLE_AUTOUPDATER.
+#
 # These are shared BETWEEN PODS, not with the host: the host is frequently
 # macOS/arm64 while the pod is linux, so a host .cargo/.rustup/.cache holds
 # binaries the container cannot execute. Host reuse is opt-in per path via
@@ -849,11 +856,27 @@ SHARED_CACHE_DIRNAME=".shared-cache"
 
 default_shared_caches() {
   # HOME-relative paths, comma-separated.
-  printf '%s\n' ".npm,.npm-global,.cache,.yarn,.cargo,.rustup,.bun,.deno,.local/share/pnpm"
+  printf '%s\n' ".npm,.cache,.yarn,.cargo,.rustup,.bun,.deno,.local/share/pnpm"
 }
 
 shared_cache_root() {
   printf '%s\n' "$STATE_ROOT/$SHARED_CACHE_DIRNAME"
+}
+
+# ---- shared codex login ---------------------------------------------------
+# Codex authenticates with a device code and stores the resulting ChatGPT
+# tokens in ~/.codex/auth.json, inside the per-agent HOME. A login done in the
+# `codex` pod is therefore invisible to codex running under any other agent
+# name. Unlike Claude Code there is no env-var equivalent to hand the pod, and
+# codex rewrites auth.json by atomic rename — which a single-file bind mount
+# cannot survive — so the whole ~/.codex directory is shared instead. One
+# device-code login, and one set of trusted-project and hook decisions, for
+# every pod. Auth is shared here on purpose; this is the deliberate exception
+# to the per-agent HOME rule, not a cache.
+SHARED_AUTH_DIRNAME=".shared-auth"
+
+shared_auth_root() {
+  printf '%s\n' "$STATE_ROOT/$SHARED_AUTH_DIRNAME"
 }
 
 # A cache entry is a HOME-relative path: no leading slash, no "..", no commas.
@@ -973,11 +996,12 @@ agent_state_dirs() {
   done
 }
 
-# Move an agent's existing cache into the shared root the first time we see it,
-# so the very first launch after upgrading keeps (rather than re-downloads) the
-# warm cache. Only ever moves into an absent/empty shared target, and only with
-# a rename — never a multi-gigabyte copy behind the user's back.
-adopt_shared_cache() {
+# Move an agent's existing directory into a shared root the first time we see
+# it, so the first launch after upgrading keeps what is already on disk — a warm
+# cache, or a login the user has already completed — instead of starting empty.
+# Only ever moves into an absent/empty shared target, and only with a rename:
+# never a multi-gigabyte copy, and never over something already populated.
+adopt_into_shared_store() {
   local own="$1" shared="$2"
   [ -d "$own" ] || return 1
   dir_is_empty "$own" && return 1
@@ -1065,7 +1089,7 @@ run_cache() {
           kb="$(dir_size_kb "$own/$rel")"
           if [ "$kb" -gt "$best_kb" ]; then best_kb="$kb"; best="$own/$rel"; fi
         done <<< "$(agent_state_dirs)"
-        if [ -n "$best" ] && adopt_shared_cache "$best" "$shared"; then
+        if [ -n "$best" ] && adopt_into_shared_store "$best" "$shared"; then
           mkdir -p "$best" 2>/dev/null || true
           ok "$rel: adopted $(human_kb "$best_kb") from $(basename "$(dirname "$best")")."
         else
@@ -2042,7 +2066,7 @@ while IFS= read -r cache_rel; do
   own_dir="$STATE_DIR/$cache_rel"
   # First launch after upgrading: hand this agent's warm cache to the shared
   # store by renaming it, so nothing has to be re-downloaded.
-  if adopt_shared_cache "$own_dir" "$shared_dir"; then
+  if adopt_into_shared_store "$own_dir" "$shared_dir"; then
     info "Adopted $cache_rel into the shared cache."
   elif [ -d "$own_dir" ] && ! dir_is_empty "$own_dir"; then
     SHADOWED_CACHE_COUNT=$((SHADOWED_CACHE_COUNT + 1))
@@ -2057,6 +2081,25 @@ if [ -d "$SHARED_CACHE_ROOT" ]; then
 fi
 if [ "$SHADOWED_CACHE_COUNT" -gt 0 ]; then
   warn "$SHADOWED_CACHE_COUNT per-agent cache dir(s) are shadowed by the shared cache; reclaim that space with: agent-pod cache clean"
+fi
+
+# ---- shared codex login ---------------------------------------------------
+# Mounted for every agent, not just `codex`, so one device-code login covers
+# codex however it is launched. Same nesting rule as the caches above: the HOME
+# mount lands first, then this shadows $CONTAINER_HOME/.codex.
+SHARED_AUTH_FLAGS=()
+if truthy "$(config_value AGENT_POD_SHARE_CODEX_AUTH 1)"; then
+  SHARED_AUTH_ROOT="$(shared_auth_root)"
+  SHARED_CODEX_DIR="$SHARED_AUTH_ROOT/.codex"
+  # First launch after upgrading: hand the login already sitting in the codex
+  # pod's HOME to the shared store, so the user does not have to re-authenticate.
+  if adopt_into_shared_store "$STATE_ROOT/codex/.codex" "$SHARED_CODEX_DIR"; then
+    info "Adopted the existing codex login into the shared auth store."
+  fi
+  mkdir -p "$SHARED_CODEX_DIR" "$STATE_DIR/.codex" 2>/dev/null || true
+  # Tokens live here, so keep both levels owner-only.
+  chmod 700 "$SHARED_AUTH_ROOT" "$SHARED_CODEX_DIR" 2>/dev/null || true
+  SHARED_AUTH_FLAGS+=(-v "$SHARED_CODEX_DIR:$CONTAINER_HOME/.codex")
 fi
 
 # ---- git identity (written to the container's ~/.gitconfig) ---------------
@@ -2094,7 +2137,7 @@ fi
 # ---- forward known provider / tooling credentials (only if set) ----------
 ENV_FLAGS=()
 for v in \
-  ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL \
+  ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_OAUTH_TOKEN \
   OPENAI_API_KEY OPENAI_BASE_URL OPENAI_ORGANIZATION \
   CURSOR_API_KEY \
   GEMINI_API_KEY GOOGLE_API_KEY OPENROUTER_API_KEY GROQ_API_KEY \
@@ -2134,6 +2177,17 @@ if [ -n "$AGENT_POD_ENV_VALUE" ]; then
       warn "Skipping unset environment variable from AGENT_POD_ENV: $v"
     fi
   done
+fi
+
+# ---- pin agent CLI versions to the image ----------------------------------
+# The image is the single source of truth for harness versions: `agent-pod
+# update-image` rebuilds it with a fresh `npm install -g <cli>@latest`. An
+# agent CLI's own updater fights that — it installs into $NPM_CONFIG_PREFIX
+# inside the pod, which is per-agent state that the next `update-image` does
+# not touch, so the two drift apart. Turn the updater off unless the user
+# explicitly wants pods to self-update.
+if ! truthy "$(config_value AGENT_POD_AGENT_AUTOUPDATE 0)"; then
+  ENV_FLAGS+=(-e "DISABLE_AUTOUPDATER=1")
 fi
 
 ENV_FILE_FLAGS=()
@@ -2277,6 +2331,7 @@ exec docker run --rm \
   -e PATH="$CONTAINER_PATH" \
   -v "$STATE_DIR:$CONTAINER_HOME" \
   "${SHARED_CACHE_FLAGS[@]}" \
+  "${SHARED_AUTH_FLAGS[@]}" \
   "${HOST_CACHE_FLAGS[@]}" \
   -v "$PWD:$PWD" \
   -w "$PWD" \

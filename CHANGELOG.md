@@ -2,6 +2,30 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Shared codex login. Codex's `~/.codex` now lives once in `~/.agent-pod/.shared-auth/` and is mounted into every pod, so a single device-code login applies to codex however it is launched instead of only under the `codex` agent name. An existing login is moved into the shared store on first launch. Opt out with `AGENT_POD_SHARE_CODEX_AUTH=0`.
+- `CLAUDE_CODE_OAUTH_TOKEN` is forwarded from the host environment, alongside the other provider credentials. Previously it only reached a pod when written into the config file.
+- `AGENT_POD_AGENT_AUTOUPDATE` (default `0`): agent CLIs no longer update themselves inside pods. Versions come from the image — refresh them with `agent-pod update-image`.
+
+### Fixed
+
+- Removed `.npm-global` from the shared cache list. It is npm's install prefix, not a cache: sharing it let concurrent pods race to install an agent CLI's self-update into one directory and swap the binary out from under running sessions.
+
+### Changed
+
+- None.
+
+### Security
+
+- None.
+
+### Documentation
+
+- Document the shared codex login, `AGENT_POD_SHARE_CODEX_AUTH`, and `AGENT_POD_AGENT_AUTOUPDATE` in `.agent-pod.env.example`.
+
 ## [1.26.0] - 2026-08-07:09:44
 
 ### Added
