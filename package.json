@@ -1,6 +1,6 @@
 {
   "name": "agent-pod-cli",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "description": "Run AI coding-agent CLIs inside a Docker sandbox scoped to the current project.",
   "author": "Jake Chase-Lubitz",
   "bin": {
@@ -10,7 +10,7 @@
   "scripts": {
     "postinstall": "node scripts/postinstall.js",
     "pack:check": "npm pack --dry-run",
-    "test": "bash -n agent-pod install.sh uninstall.sh scripts/check-local-global-install.sh && scripts/check-local-global-install.sh"
+    "test": "bash -n agent-pod install.sh uninstall.sh lib/*.sh scripts/*.sh && scripts/check-local-global-install.sh && scripts/check-launch-config.sh"
   },
   "keywords": [
     "agent",

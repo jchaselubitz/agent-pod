@@ -8,17 +8,22 @@
 #   OVERLORD_VERSION=...
 set -eo pipefail
 
-IMAGE="${AGENT_POD_IMAGE:-agent-pod}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 REFRESH_IMAGE="${AGENT_POD_REFRESH_IMAGE:-0}"
 
-CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-latest}"
-CODEX_VERSION="${CODEX_VERSION:-latest}"
-OPENCODE_VERSION="${OPENCODE_VERSION:-latest}"
-OVERLORD_VERSION="${OVERLORD_VERSION:-latest}"
-EXTRA_APT_PACKAGES="${AGENT_POD_APT_PACKAGES:-${EXTRA_APT_PACKAGES:-}}"
-EXTRA_NPM_PACKAGES="${AGENT_POD_NPM_PACKAGES:-${EXTRA_NPM_PACKAGES:-}}"
+# shellcheck source=lib/common.sh
+source "$DIR/lib/common.sh"
+
 CONFIG_ENV_FILE="${AGENT_POD_ENV_FILE:-${AGENT_POD_HOME:-$HOME/.agent-pod}/.agent-pod.env}"
+ENV_FILE="$CONFIG_ENV_FILE"
+
+IMAGE="$(config_value AGENT_POD_IMAGE agent-pod)"
+CLAUDE_CODE_VERSION="$(config_value CLAUDE_CODE_VERSION latest)"
+CODEX_VERSION="$(config_value CODEX_VERSION latest)"
+OPENCODE_VERSION="$(config_value OPENCODE_VERSION latest)"
+OVERLORD_VERSION="$(config_value OVERLORD_VERSION latest)"
+EXTRA_APT_PACKAGES="$(config_value AGENT_POD_APT_PACKAGES "")"
+EXTRA_NPM_PACKAGES="$(config_value AGENT_POD_NPM_PACKAGES "")"
 
 if [ -t 1 ]; then
   C_INFO=$'\033[34m'; C_OK=$'\033[32m'; C_ERR=$'\033[31m'; C_DIM=$'\033[2m'; C_OFF=$'\033[0m'
@@ -33,108 +38,6 @@ die()  { printf '%s%s%s\n' "$C_ERR"  "$*" "$C_OFF" >&2; exit 1; }
 command -v docker >/dev/null 2>&1 || die "Docker is not installed or not on PATH."
 docker info >/dev/null 2>&1       || die "Docker daemon is not running. Start Docker and retry."
 
-# Read a KEY=VALUE entry out of an env-file, ignoring comments/blank lines and
-# stripping an optional `export ` prefix and surrounding quotes. Mirrors the
-# launcher's dotenv parser so both agree on what "the user has in the env".
-dotenv_get() {
-  key="$1"; file="$2"
-  [ -n "$file" ] && [ -f "$file" ] || return 1
-  awk -v key="$key" '
-    /^[[:space:]]*(#|$)/ { next }
-    {
-      line=$0
-      sub(/^[[:space:]]*export[[:space:]]+/, "", line)
-      split(line, parts, "=")
-      k=parts[1]
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", k)
-      if (k == key) {
-        sub(/^[^=]*=/, "", line)
-        gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
-        if (line ~ /^".*"$/ || line ~ /^'\''.*'\''$/) {
-          line=substr(line, 2, length(line)-2)
-        }
-        print line
-        found=1
-      }
-    }
-    END { exit found ? 0 : 1 }
-  ' "$file"
-}
-
-upsert_env_var() {
-  local file="$1"
-  local key="$2"
-  local value="$3"
-  local tmp
-  tmp="${file}.tmp.$$"
-  mkdir -p "$(dirname "$file")" 2>/dev/null || true
-  if [ -f "$file" ] && grep -Eq "^[[:space:]]*(export[[:space:]]+)?${key}=" "$file"; then
-    awk -v key="$key" -v value="$value" '
-      BEGIN { done=0 }
-      $0 ~ "^[[:space:]]*(export[[:space:]]+)?" key "=" {
-        if (!done) {
-          print key "=" value
-          done=1
-        }
-        next
-      }
-      { print }
-    ' "$file" > "$tmp"
-  else
-    [ -f "$file" ] && cp "$file" "$tmp" || : > "$tmp"
-    printf '%s=%s\n' "$key" "$value" >> "$tmp"
-  fi
-  mv "$tmp" "$file"
-  chmod 600 "$file" 2>/dev/null || true
-}
-
-available_agents() {
-  printf '%s\n' "claude codex opencode cursor agent"
-}
-
-builtin_agents() {
-  available_agents
-}
-
-valid_agent_id() {
-  case "$1" in
-    [a-z][a-z0-9_-]*) return 0;;
-    *) return 1;;
-  esac
-}
-
-is_builtin_agent() {
-  case "$1" in
-    claude|codex|opencode|cursor|agent) return 0;;
-    *) return 1;;
-  esac
-}
-
-agent_env_key() {
-  printf '%s' "$1" | tr '[:lower:]-' '[:upper:]_'
-}
-
-normalize_agents() {
-  local raw normalized agent
-  raw="$*"
-  [ -n "$raw" ] || return 1
-  normalized=""
-  for agent in $(printf '%s\n' "$raw" | tr '[:upper:],;' '[:lower:]  '); do
-    case "$agent" in
-      all) printf '%s\n' "$(available_agents)"; return 0;;
-      overlord) continue;;
-      *)
-        valid_agent_id "$agent" || return 1
-        ;;
-    esac
-    case " $normalized " in
-      *" $agent "*) ;;
-      *) normalized="${normalized:+$normalized }$agent";;
-    esac
-  done
-  [ -n "$normalized" ] || return 1
-  printf '%s\n' "$normalized"
-}
 
 collect_custom_npm_packages() {
   local agent key npm_pkg custom_npms=""
@@ -172,12 +75,6 @@ package_list_items() {
   done
 }
 
-valid_package_token() {
-  case "$1" in
-    ""|-*|*[!A-Za-z0-9@._/+~^=-]*) return 1;;
-    *) return 0;;
-  esac
-}
 
 validate_package_list() {
   local label="$1" list="$2" pkg
@@ -240,19 +137,6 @@ probe_apt_package_version() {
   print_installed_version "apt:$pkg:" "$out"
 }
 
-agent_in_list() {
-  local needle agent
-  needle="$1"; shift
-  for agent in "$@"; do
-    [ "$agent" = "$needle" ] && return 0
-  done
-  return 1
-}
-
-agents_csv() {
-  printf '%s\n' "$*" | tr ' ' ','
-}
-
 prompt_yes_no() {
   prompt="$1"
   default="$2"
@@ -271,29 +155,29 @@ prompt_yes_no() {
 }
 
 prompt_agent_selection() {
-  [ -t 0 ] || { available_agents; return 0; }
-  if prompt_yes_no "Build support for all built-in agents? ($(available_agents))" "yes"; then
-    available_agents
+  [ -t 0 ] || { builtin_agents; return 0; }
+  if prompt_yes_no "Build support for all built-in agents? ($(builtin_agents))" "yes"; then
+    builtin_agents
     return 0
   fi
   while true; do
-    printf 'Agents to support (space/comma separated; built-in: %s, or custom IDs): ' "$(available_agents)"
+    printf 'Agents to support (space/comma separated; built-in: %s, or custom IDs): ' "$(builtin_agents)"
     read -r reply
     if normalized="$(normalize_agents "$reply" 2>/dev/null)"; then
       printf '%s\n' "$normalized"
       return 0
     fi
-    warn "Use built-in agents ($(available_agents)) or custom IDs (lowercase, e.g. gemini)."
+    warn "Use built-in agents ($(builtin_agents)) or custom IDs (lowercase, e.g. gemini)."
   done
 }
 
 resolve_agents() {
   if [ -n "${AGENT_POD_AGENTS:-}" ]; then
-    normalize_agents "$AGENT_POD_AGENTS" || die "Invalid AGENT_POD_AGENTS. Use built-in agents ($(available_agents)) or custom agent IDs."
+    normalize_agents "$AGENT_POD_AGENTS" || die "Invalid AGENT_POD_AGENTS. Use built-in agents ($(builtin_agents)) or custom agent IDs."
     return 0
   fi
   if agents="$(dotenv_get AGENT_POD_AGENTS "$CONFIG_ENV_FILE" 2>/dev/null)"; then
-    normalize_agents "$agents" || die "Invalid AGENT_POD_AGENTS in $CONFIG_ENV_FILE. Use built-in agents ($(available_agents)) or custom agent IDs."
+    normalize_agents "$agents" || die "Invalid AGENT_POD_AGENTS in $CONFIG_ENV_FILE. Use built-in agents ($(builtin_agents)) or custom agent IDs."
     return 0
   fi
   agents="$(prompt_agent_selection)"
@@ -326,50 +210,16 @@ resolve_overlord_install() {
 }
 
 # Resolve Overlord CLI credentials the same way the launcher resolves config:
-# an explicit environment variable wins, otherwise fall back to the central
-# config file (~/.agent-pod/.agent-pod.env, or AGENT_POD_ENV_FILE if set).
-# Legacy OVERLORD_AGENT_TOKEN / OVERLORD_URL names are still accepted.
+# an explicit environment variable wins, otherwise use the central config.
 resolve_overlord_user_token() {
-  if [ -n "${OVERLORD_USER_TOKEN:-}" ]; then
-    printf '%s\n' "$OVERLORD_USER_TOKEN"; return 0
-  fi
-  if [ -n "${OVERLORD_AGENT_TOKEN:-}" ]; then
-    printf '%s\n' "$OVERLORD_AGENT_TOKEN"; return 0
-  fi
-  cfg="${AGENT_POD_ENV_FILE:-${AGENT_POD_HOME:-$HOME/.agent-pod}/.agent-pod.env}"
-  if value="$(dotenv_get OVERLORD_USER_TOKEN "$cfg" 2>/dev/null)"; then
-    printf '%s\n' "$value"; return 0
-  fi
-  dotenv_get OVERLORD_AGENT_TOKEN "$cfg" 2>/dev/null
+  config_value OVERLORD_USER_TOKEN ""
 }
 
 resolve_overlord_backend_url() {
-  url=""
-  if [ -n "${OVERLORD_BACKEND_URL:-}" ]; then
-    url="$OVERLORD_BACKEND_URL"
-  elif [ -n "${OVERLORD_URL:-}" ]; then
-    url="$OVERLORD_URL"
-  else
-    cfg="${AGENT_POD_ENV_FILE:-${AGENT_POD_HOME:-$HOME/.agent-pod}/.agent-pod.env}"
-    if value="$(dotenv_get OVERLORD_BACKEND_URL "$cfg" 2>/dev/null)"; then
-      url="$value"
-    else
-      url="$(dotenv_get OVERLORD_URL "$cfg" 2>/dev/null || true)"
-    fi
-  fi
+  url="$(config_value OVERLORD_BACKEND_URL "")"
   [ -z "$url" ] && return 1
-  case "$url" in
-    http://*|https://*) printf '%s\n' "$url";;
-    *) printf 'http://%s\n' "$url";;
-  esac
+  normalize_overlord_backend_url "$url"
 }
-
-# Fall back to the saved config file (managed by `agent-pod package-add`) when
-# the custom package lists aren't provided via the environment. This is the
-# "config file" path: edit ~/.agent-pod/.agent-pod.env (or use `package-add`)
-# once and every rebuild picks the packages up — no need to re-export them.
-[ -n "$EXTRA_APT_PACKAGES" ] || EXTRA_APT_PACKAGES="$(dotenv_get AGENT_POD_APT_PACKAGES "$CONFIG_ENV_FILE" 2>/dev/null || true)"
-[ -n "$EXTRA_NPM_PACKAGES" ] || EXTRA_NPM_PACKAGES="$(dotenv_get AGENT_POD_NPM_PACKAGES "$CONFIG_ENV_FILE" 2>/dev/null || true)"
 
 ENABLED_AGENTS="$(resolve_agents)"
 INSTALL_OVERLORD="$(resolve_overlord_install)"
@@ -498,8 +348,9 @@ setup_overlord_connectors() {
     return 0
   fi
 
-  state_root="${AGENT_POD_HOME:-$HOME/.agent-pod}"
+  state_root="$(config_value AGENT_POD_HOME "$HOME/.agent-pod")"
   ov_env=(-e "OVERLORD_USER_TOKEN=$token" -e "OVERLORD_BACKEND_URL=$backend_url")
+  bootstrap="$(overlord_in_pod_bootstrap_fragment)ovld agent-setup all </dev/null;"
 
   info ""
   info "Overlord credentials detected — running 'ovld agent-setup all' for each agent..."
@@ -516,23 +367,7 @@ setup_overlord_connectors() {
         -v "$state_dir:/home/agent-pod" \
         -w /home/agent-pod \
         "$IMAGE" \
-        bash -lc \
-          'if command -v ovld >/dev/null 2>&1; then
-             backend_url="${OVERLORD_BACKEND_URL:-}";
-             user_token="${OVERLORD_USER_TOKEN:-}";
-             if [ -n "$backend_url" ]; then
-               case "$backend_url" in http://*|https://*) ;; *) backend_url="http://${backend_url}";; esac;
-               case "$backend_url" in
-                 *://127.0.0.1:*|*://127.0.0.1|*://localhost:*|*://localhost|*://host.docker.internal:*|*://host.docker.internal)
-                   ovld config set local "$backend_url" >/dev/null 2>&1 || true;;
-                 *) ovld config set cloud "$backend_url" >/dev/null 2>&1 || true;;
-               esac;
-               if [ -n "$user_token" ]; then
-                 ovld auth login --token "$user_token" >/dev/null 2>&1 || true;
-               fi;
-             fi;
-             ovld agent-setup all;
-           fi' </dev/null >/dev/null 2>&1; then
+        bash -lc "$bootstrap" </dev/null >/dev/null 2>&1; then
       ok "    connectors + permissions configured"
     else
       warn "    'ovld agent-setup all' failed for '$agent' — run it later with: agent-pod $agent (then 'ovld agent-setup all')"

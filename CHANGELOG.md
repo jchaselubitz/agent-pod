@@ -2,6 +2,41 @@
 
 All notable changes to this project are documented in this file.
 
+## [2.4.0] - 2026-08-09:15:07
+
+### Added
+
+- None.
+
+### Fixed
+
+- None.
+
+### Changed
+
+- Env-file resolution is central-only: `AGENT_POD_ENV_FILE` if set, otherwise `~/.agent-pod/.agent-pod.env`. Project-local and launcher-dir `.agent-pod.env` / `agent-pod.env` files are no longer discovered implicitly; set `AGENT_POD_ENV_FILE` for a project-specific override.
+- Image builds (`install.sh`) and launches share one config implementation, so package lists, agent selection, image name, and Overlord settings resolve the same way in both paths.
+
+### Security
+
+- None.
+
+### Removed
+
+- Legacy Overlord env-name fallbacks (`OVERLORD_URL`, `OVERLORD_AGENT_TOKEN`). Use `OVERLORD_BACKEND_URL` and `OVERLORD_USER_TOKEN`.
+
+### Refactor
+
+- Extract shared config, agent-model, and Overlord bootstrap helpers into `lib/common.sh`, sourced by both the launcher and `install.sh`.
+
+### Test
+
+- Add `scripts/check-launch-config.sh` to assert central env-file loading, shared-cache mounts, Claude onboarding bootstrap, and install/launch config agreement; wire it into `npm test`.
+
+### Documentation
+
+- Document central-only env-file resolution and `CLAUDE_CODE_OAUTH_TOKEN` in the README and `.agent-pod.env.example`.
+
 ## [2.3.0] - 2026-08-09:14:43
 
 ### Added

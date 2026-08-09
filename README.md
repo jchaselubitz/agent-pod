@@ -511,34 +511,32 @@ Two options, both persist across runs in `~/.agent-pod/<agent>/`:
 
 1. **Interactive login** — run the agent once and complete its normal login
    flow. The credentials are saved in the per-agent state directory.
-2. **Provider keys** — export a key in your shell and it is forwarded into the
-   container automatically. Recognized variables include:
-   `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CURSOR_API_KEY`, `GEMINI_API_KEY`,
-   `OPENROUTER_API_KEY`, `GROQ_API_KEY`, `GITHUB_TOKEN`, and more.
+2. **Provider keys or tokens** — export a credential in your shell and it is
+   forwarded into the container automatically. Recognized variables include:
+   `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+   `CURSOR_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, `GROQ_API_KEY`,
+   `GITHUB_TOKEN`, and more.
 
 For secrets or API keys you want every pod to receive, put them in the central
 config file that `agent-pod setup` manages:
 
 ```dotenv
 # ~/.agent-pod/.agent-pod.env
+CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
 OPENAI_API_KEY=sk-...
 STRIPE_SECRET_KEY=sk_test_...
 ```
 
-`agent-pod` resolves the env-file in this order, using the first that exists:
+`agent-pod` resolves one env-file:
 
 1. `AGENT_POD_ENV_FILE`, if set — an explicit override.
-2. `~/.agent-pod/.agent-pod.env` — the central config that lives with the CLI.
-3. `.agent-pod.env`, then `agent-pod.env`, in the current project directory —
-   legacy project-local files, still honored if present.
-4. `.agent-pod.env`, then `agent-pod.env`, next to the launcher — legacy
-   source-checkout files.
+2. Otherwise, `~/.agent-pod/.agent-pod.env` — the central config that lives
+   with the CLI.
 
 The central file is the default and what `setup` writes, so the same config
 applies no matter which directory you launch from. For a project-specific
-override, set `AGENT_POD_ENV_FILE` or keep a `.agent-pod.env` in that project
-root. These values are loaded when the container starts, so restart
-`agent-pod` after editing the file.
+override, set `AGENT_POD_ENV_FILE` explicitly. These values are loaded when the
+container starts, so restart `agent-pod` after editing the file.
 
 To use a different file:
 
@@ -740,7 +738,7 @@ agent-pod network supabase_network_<project>
 | `AGENT_POD_ENV` | _(none)_ | Comma- or space-separated host env var names to forward |
 | `AGENT_POD_ALLOWED_PATHS` | _(none)_ | Comma-separated existing absolute host paths to bind-mount into new pods; read/write by default, append `:ro` per path for read-only. Set as an env var, replaces the persisted personal allowlist for that one launch |
 | `AGENT_POD_EXTRA_ALLOWED_PATHS` | _(none)_ | Env-only, never persisted: same syntax as `AGENT_POD_ALLOWED_PATHS`, but merges additively on top of the personal config and project file for one launch instead of replacing them |
-| `AGENT_POD_ENV_FILE` | `~/.agent-pod/.agent-pod.env`, then legacy project/launcher files | Docker env-file to load into the container |
+| `AGENT_POD_ENV_FILE` | `~/.agent-pod/.agent-pod.env` | Explicit Docker env-file override |
 | `AGENT_POD_YOLO` | `1` | Set to `0` to drop the auto-approve flags |
 | `AGENT_POD_AGENTS` | `claude,codex,opencode,cursor` | Comma- or space-separated agents to build and run (built-in + custom) |
 | `AGENT_POD_<ID>_BIN` | _(none)_ | Custom agent CLI binary (required for custom agents) |
@@ -755,7 +753,7 @@ agent-pod network supabase_network_<project>
 | `AGENT_POD_IMAGE` | `agent-pod` | Image name to build/run |
 | `AGENT_POD_HOME` | `~/.agent-pod` | Where per-agent state is stored |
 | `AGENT_POD_SHARE_CACHES` | `1` | Set to `0` to give every agent its own package-manager caches again (manage with `agent-pod cache`) |
-| `AGENT_POD_SHARED_CACHES` | `.npm,.npm-global,.cache,.yarn,.cargo,.rustup,.bun,.deno,.local/share/pnpm` | Comma-separated `HOME`-relative paths mounted from one shared store into every pod |
+| `AGENT_POD_SHARED_CACHES` | `.npm,.cache,.yarn,.cargo,.rustup,.bun,.deno,.local/share/pnpm` | Comma-separated `HOME`-relative paths mounted from one shared store into every pod |
 | `AGENT_POD_HOST_CACHES` | _(none)_ | Opt-in: comma-separated `HOME`-relative paths (optional `:ro`/`:rw`) mounted from the **host's** home into every pod. Safe only for platform-neutral stores such as `.npm` and `.yarn` |
 | `AGENT_POD_AUTO_PRUNE` | `1` | Set to `0` to disable periodic stopped-container pruning |
 | `AGENT_POD_PRUNE_INTERVAL_HOURS` | `24` | How often launches try automatic pruning; `0` means every launch |

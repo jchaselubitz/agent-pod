@@ -28,6 +28,11 @@ fi
   exit 1
 }
 
+[ -f "$GLOBAL_PACKAGE/lib/common.sh" ] || {
+  echo "Expected shared runtime library to be installed at: $GLOBAL_PACKAGE/lib/common.sh" >&2
+  exit 1
+}
+
 [ -L "$BIN" ] || {
   echo "Expected npm to create the global agent-pod bin link: $BIN" >&2
   exit 1
